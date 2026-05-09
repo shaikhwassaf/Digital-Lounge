@@ -2,27 +2,65 @@ import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabaseClient';
 
 export default function App() {
+  const [lounges, setLounges] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  return (
-    <div style={{ padding: '40px', maxWidth: '800px', margin: '0 auto', fontFamily: 'sans-serif' }}>
-      <header style={{ borderBottom: '2px solid #eee', marginBottom: '20px' }}>
-        <h1 style={{ color: '#111' }}>Digital Lounge</h1>
-        <p style={{ color: '#666' }}>Welcome to the central hub.</p>
-      </header>
+  useEffect(() => {
+    async function getLounges() {
+      // 1. Fetch from your specific 'active_lounges' table
+      const { data, error } = await supabase
+        .from('active_lounges')
+        .select('*');
 
-      <main>
-        <div style={{ padding: '20px', backgroundColor: '#f9f9f9', borderRadius: '8px', border: '1px solid #ddd' }}>
-          <h3>Lounge Status: Online</h3>
-          <p>The system is ready to manage your digital spaces.</p>
-          <button 
-            onClick={() => alert('Feature coming soon!')}
-            style={{ padding: '10px 20px', background: '#000', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
-          >
-            Create New Lounge Room
-          </button>
-        </div>
-      </main>
+      if (error) {
+        console.error('Supabase Error:', error.message);
+      } else {
+        setLounges(data || []);
+      }
+      setLoading(false);
+    }
+
+    getLounges();
+  }, []);
+
+  return (
+    <div style={{ padding: '20px', maxWidth: '600px', margin: '0 auto', fontFamily: 'sans-serif' }}>
+      <h1 style={{ borderBottom: '2px solid #333', paddingBottom: '10px' }}>Digital Lounge</h1>
+      
+      <div style={{ margin: '20px 0' }}>
+        <button style={{ background: '#000', color: '#fff', padding: '10px 15px', borderRadius: '5px', cursor: 'pointer' }}>
+          + Host New Lounge
+        </button>
+      </div>
+
+      <div>
+        <h3>Live Lounges</h3>
+        {loading ? (
+          <p>Scanning for active lounges...</p>
+        ) : lounges.length > 0 ? (
+          lounges.map((lounge) => (
+            <div key={lounge.id} style={{ 
+              background: '#fff', 
+              border: '1px solid #ddd', 
+              padding: '15px', 
+              borderRadius: '8px',
+              marginBottom: '10px',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <strong>{lounge.name || 'Unnamed Lounge'}</strong>
+                <span style={{ fontSize: '12px', color: '#2e7d32', fontWeight: 'bold' }}>● ACTIVE</span>
+              </div>
+              <p style={{ fontSize: '14px', color: '#666', margin: '8px 0' }}>{lounge.topic || 'No topic set'}</p>
+              <button style={{ fontSize: '12px', cursor: 'pointer' }}>Join Lounge</button>
+            </div>
+          ))
+        ) : (
+          <div style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
+            <p>The lounge area is currently empty.</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
