@@ -34,7 +34,7 @@ interface FileShare {
   lounge_id: string;
   from_peer_id: string;
   from_name: string;
-  to_peer_id: string | null; // null = all participants
+  to_peer_id: string | null;
   file_name: string;
   file_url: string;
   created_at: string;
@@ -594,14 +594,54 @@ export default function App() {
             </div>
           )}
 
+          {/* STUDENT ACTION PANEL - HIGHLY VISIBLE */}
+          {!isHost && sessionStatus === 'active' && (
+            <div style={{ background: '#fff3cd', border: '3px solid #ff9800', padding: '15px', borderRadius: '10px', marginBottom: '20px' }}>
+              <h3 style={{ color: '#ff6600', margin: '0 0 15px 0' }}>🎯 Your Tools</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <button 
+                  onClick={() => setShowQuestionModal(true)} 
+                  style={{ 
+                    background: '#ff6600', 
+                    color: '#fff', 
+                    padding: '15px 20px', 
+                    borderRadius: '8px', 
+                    cursor: 'pointer', 
+                    fontSize: '16px',
+                    fontWeight: 'bold',
+                    border: 'none',
+                    transition: 'all 0.3s'
+                  }}
+                  onMouseOver={(e) => e.currentTarget.style.background = '#ff5500'}
+                  onMouseOut={(e) => e.currentTarget.style.background = '#ff6600'}
+                >
+                  ❓ Ask Question
+                </button>
+                <button 
+                  onClick={() => handleParticipantShareFile('document.pdf')}
+                  style={{ 
+                    background: '#17a2b8', 
+                    color: '#fff', 
+                    padding: '15px 20px', 
+                    borderRadius: '8px', 
+                    cursor: 'pointer', 
+                    fontSize: '16px',
+                    fontWeight: 'bold',
+                    border: 'none',
+                    transition: 'all 0.3s'
+                  }}
+                  onMouseOver={(e) => e.currentTarget.style.background = '#138496'}
+                  onMouseOut={(e) => e.currentTarget.style.background = '#17a2b8'}
+                >
+                  📤 Share File
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* QUESTIONS SECTION */}
           <div style={{ background: '#fff', padding: '15px', borderRadius: '10px', marginBottom: '20px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-              <h3>❓ Questions ({questions.length})</h3>
-              {!isHost && sessionStatus === 'active' && (
-                <button onClick={() => setShowQuestionModal(true)} style={{ background: '#4caf50', color: '#fff', padding: '8px 12px', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' }}>+ Ask Question</button>
-              )}
-            </div>
+            <h3>❓ Questions ({questions.length})</h3>
 
             {questions.length === 0 ? (
               <p style={{ color: '#999' }}>No questions yet</p>
@@ -682,19 +722,6 @@ export default function App() {
           {hasVotedInPoll && !isHost && (
             <p style={{ color: '#4caf50', fontWeight: 'bold' }}>✓ Your response submitted</p>
           )}
-
-          {/* PARTICIPANT FILE SHARING */}
-          {!isHost && sessionStatus === 'active' && (
-            <div style={{ background: '#fff3e0', padding: '15px', borderRadius: '10px', marginTop: '20px' }}>
-              <h4>Share with Teacher</h4>
-              <button 
-                onClick={() => handleParticipantShareFile('document.pdf')}
-                style={{ background: '#ff9800', color: '#fff', padding: '10px 20px', borderRadius: '5px', cursor: 'pointer', width: '100%', border: 'none', fontWeight: 'bold' }}
-              >
-                📤 Share File
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -704,7 +731,8 @@ export default function App() {
       {showQuestionModal && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}>
           <div style={{ background: '#fff', padding: '30px', borderRadius: '12px', width: '400px' }}>
-            <h2>Ask a Question</h2>
+            <h2>❓ Ask a Question</h2>
+            <p style={{ color: '#666', fontSize: '14px', marginBottom: '10px' }}>Share your question with the teacher and classmates</p>
             <textarea 
               placeholder="Type your question..." 
               value={questionText} 
