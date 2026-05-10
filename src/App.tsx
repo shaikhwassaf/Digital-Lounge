@@ -173,17 +173,27 @@ export default function App() {
   const handleJoinLounge = async () => {
     try {
       if (!guestName.trim()) return alert('Please enter your name.');
+      if (!inputCode.trim()) return alert('Please enter the entry code.');
 
       let lounge = currentLounge;
 
-      if (!lounge || lounge.entry_code.toString() !== inputCode.trim()) {
+      if (lounge) {
+        // Lounge was pre-selected from the list — validate entered code matches
+        if (inputCode.trim() !== lounge.entry_code.toString()) {
+          return alert('Wrong entry code for this lounge. Please check the code and try again.');
+        }
+      } else {
+        // No lounge pre-selected — look it up by entered code
         const { data, error } = await supabase
           .from('active_lounges')
           .select('*')
           .eq('entry_code', inputCode.trim())
           .single();
 
-        if (error || !data) return alert('Invalid entry code!');
+        if (error || !data) {
+          console.error('Join error:', error);
+          return alert('No lounge found with that entry code.');
+        }
         lounge = data;
       }
 
@@ -364,7 +374,7 @@ export default function App() {
             Host Class
           </button>
           <button 
-            onClick={() => setShowJoinModal(true)} 
+            onClick={() => { setCurrentLounge(null); setInputCode(''); setShowJoinModal(true); }} 
             style={{ padding: '15px 30px', background: '#fff', border: '2px solid #000', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold' }}
           >
             Join Class
@@ -381,7 +391,7 @@ export default function App() {
                 <h4>{lounge.lounge_name}</h4>
                 <p>Host: {lounge.host_name}</p>
                 <button 
-                  onClick={() => { setCurrentLounge(lounge); setShowJoinModal(true); }}
+                  onClick={() => { setCurrentLounge(lounge); setInputCode(''); setShowJoinModal(true); }}
                   style={{ padding: '8px 15px', background: '#007bff', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}
                 >
                   Join
