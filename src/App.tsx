@@ -74,12 +74,12 @@ function parseMath(t: string): string {
 
 // ─── Shared UI helpers ───────────────────────────────────────────────────────
 function Overlay({ children }: { children: React.ReactNode }) {
-  return <div style={{ position: 'fixed', inset: 0, background: 'rgba(30,58,138,0.45)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', zIndex: 2000, overflowY: 'auto', padding: '24px 0', backdropFilter: 'blur(3px)' }}>{children}</div>;
+  return <div style={{ position: 'fixed', inset: 0, background: 'rgba(30,58,138,0.45)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', zIndex: 2000, overflowY: 'auto', padding: '16px', boxSizing: 'border-box', backdropFilter: 'blur(3px)', WebkitOverflowScrolling: 'touch' as any }}>{children}</div>;
 }
 function Modal({ children, title, onClose }: { children: React.ReactNode; title: string; onClose: () => void }) {
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(30,58,138,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, backdropFilter: 'blur(3px)' }}>
-      <div style={{ background: C.card, padding: '28px', borderRadius: '16px', width: '370px', maxWidth: '94vw', boxShadow: '0 20px 60px rgba(30,64,175,0.2)', border: `1px solid ${C.border}` }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(30,58,138,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, backdropFilter: 'blur(3px)', padding: '16px', boxSizing: 'border-box' }}>
+      <div style={{ background: C.card, padding: '24px', borderRadius: '16px', width: '370px', maxWidth: '100%', boxShadow: '0 20px 60px rgba(30,64,175,0.2)', border: `1px solid ${C.border}` }}>
         <h3 style={{ marginTop: 0, color: C.text, fontWeight: '800' }}>{title}</h3>{children}
       </div>
     </div>
@@ -95,6 +95,17 @@ const card = (extra?: React.CSSProperties): React.CSSProperties => ({ background
 const hBtn = (bg: string, color = '#fff'): React.CSSProperties => ({ background: bg, color, border: 'none', padding: '5px 11px', borderRadius: '7px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' as const });
 const pill = (bg: string, color: string): React.CSSProperties => ({ background: bg, color, borderRadius: '20px', padding: '2px 9px', fontSize: '11px', fontWeight: '700' });
 
+// ─── Responsive Hook ─────────────────────────────────────────────────────────
+function useWindowWidth() {
+  const [w, setW] = useState(() => typeof window !== 'undefined' ? window.innerWidth : 1280);
+  useEffect(() => {
+    const fn = () => setW(window.innerWidth);
+    window.addEventListener('resize', fn);
+    return () => window.removeEventListener('resize', fn);
+  }, []);
+  return w;
+}
+
 // ─── App ─────────────────────────────────────────────────────────────────────
 export default function App() {
   const [view, setView] = useState<'lobby' | 'room'>('lobby');
@@ -104,6 +115,9 @@ export default function App() {
   const [classes, setClasses] = useState<any[]>([]);
   const [showHostModal, setShowHostModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
+  const [mobileTab, setMobileTab] = useState<'main' | 'questions'>('main');
+  const winWidth = useWindowWidth();
+  const isMobile = winWidth < 768;
 
   // Bookmark
   const [currentBookmark, setCurrentBookmark] = useState(0);
@@ -585,32 +599,32 @@ export default function App() {
       <div style={{ minHeight: '100vh', background: C.bg }}>
 
         {/* Hero */}
-        <div style={{ background: C.heroBg, padding: '56px 20px 44px', textAlign: 'center', borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ background: C.heroBg, padding: isMobile ? '32px 16px 28px' : '56px 20px 44px', textAlign: 'center', borderBottom: `1px solid ${C.border}` }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
-            <div style={{ width: '48px', height: '48px', background: C.primary, borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', boxShadow: `0 4px 14px rgba(37,99,235,0.3)` }}>🎓</div>
+            <div style={{ width: isMobile ? '40px' : '48px', height: isMobile ? '40px' : '48px', background: C.primary, borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: isMobile ? '20px' : '24px', boxShadow: `0 4px 14px rgba(37,99,235,0.3)` }}>🎓</div>
             <div style={{ textAlign: 'left' }}>
-              <h1 style={{ margin: 0, fontSize: '28px', fontWeight: '800', color: C.headerBg, letterSpacing: '-0.5px' }}>Ed Solutions</h1>
-              <p style={{ margin: 0, fontSize: '11px', color: C.primary, letterSpacing: '2.5px', textTransform: 'uppercase', fontWeight: '600' }}>Learning Management System</p>
+              <h1 style={{ margin: 0, fontSize: isMobile ? '22px' : '28px', fontWeight: '800', color: C.headerBg, letterSpacing: '-0.5px' }}>Ed Solutions</h1>
+              <p style={{ margin: 0, fontSize: '11px', color: C.primary, letterSpacing: '2px', textTransform: 'uppercase', fontWeight: '600' }}>Learning Management System</p>
             </div>
           </div>
-          <p style={{ color: C.muted, fontSize: '14px', margin: '0 auto 28px', maxWidth: '400px' }}>Students join via WhatsApp — no app install needed</p>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap' }}>
-            <button onClick={() => setShowHostModal(true)} style={{ padding: '13px 34px', background: C.primary, color: '#fff', borderRadius: '10px', cursor: 'pointer', border: 'none', fontSize: '15px', fontWeight: '700', boxShadow: `0 4px 18px rgba(37,99,235,0.3)` }}>
+          <p style={{ color: C.muted, fontSize: '13px', margin: '0 auto 22px', maxWidth: '400px' }}>Students join via WhatsApp — no app install needed</p>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap', padding: '0 8px' }}>
+            <button onClick={() => setShowHostModal(true)} style={{ flex: isMobile ? '1 1 auto' : '0 0 auto', minWidth: isMobile ? 0 : undefined, padding: '13px 28px', background: C.primary, color: '#fff', borderRadius: '10px', cursor: 'pointer', border: 'none', fontSize: '15px', fontWeight: '700', boxShadow: `0 4px 18px rgba(37,99,235,0.3)` }}>
               🏫 Host a Class
             </button>
-            <button onClick={() => { setCurrentClass(null); setInputCode(''); setShowJoinModal(true); }} style={{ padding: '13px 34px', background: '#fff', color: C.primary, border: `2px solid ${C.primary}`, borderRadius: '10px', cursor: 'pointer', fontSize: '15px', fontWeight: '700' }}>
+            <button onClick={() => { setCurrentClass(null); setInputCode(''); setShowJoinModal(true); }} style={{ flex: isMobile ? '1 1 auto' : '0 0 auto', minWidth: isMobile ? 0 : undefined, padding: '13px 28px', background: '#fff', color: C.primary, border: `2px solid ${C.primary}`, borderRadius: '10px', cursor: 'pointer', fontSize: '15px', fontWeight: '700' }}>
               🚪 Join Class
             </button>
           </div>
         </div>
 
         {/* Feature bar */}
-        <div style={{ background: C.featureBar, padding: '10px 0' }}>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '40px', flexWrap: 'wrap' }}>
+        <div style={{ background: C.featureBar, padding: '10px 8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: isMobile ? '18px' : '40px', flexWrap: 'wrap' }}>
             {[['🔴 Live', 'Real-time P2P'], ['📲 WhatsApp', 'No App Install'], ['🧠 Gated', '80% Poll Gate'], ['🏆 Gamified', 'Live Leaderboard']].map(([icon, label]) => (
               <div key={label} style={{ color: '#fff', textAlign: 'center' }}>
-                <p style={{ margin: 0, fontSize: '13px', fontWeight: '700' }}>{icon}</p>
-                <p style={{ margin: 0, fontSize: '11px', opacity: 0.8 }}>{label}</p>
+                <p style={{ margin: 0, fontSize: isMobile ? '12px' : '13px', fontWeight: '700' }}>{icon}</p>
+                <p style={{ margin: 0, fontSize: '10px', opacity: 0.8 }}>{label}</p>
               </div>
             ))}
           </div>
@@ -664,10 +678,10 @@ export default function App() {
   // ROOM
   // ═══════════════════════════════════════════════════════════════════════════
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: C.bg }}>
+    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', background: C.bg, overflow: 'hidden' }}>
 
       {/* Header */}
-      <header style={{ background: C.headerBg, color: '#fff', padding: '7px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, flexWrap: 'wrap', gap: '6px', borderBottom: `3px solid ${C.headerBdr}` }}>
+      <header style={{ background: C.headerBg, color: '#fff', padding: isMobile ? '5px 10px' : '7px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, flexWrap: 'wrap', gap: isMobile ? '4px' : '6px', borderBottom: `3px solid ${C.headerBdr}` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
             <div style={{ width: '30px', height: '30px', background: 'rgba(255,255,255,0.15)', borderRadius: '7px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px' }}>🎓</div>
@@ -715,10 +729,10 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: isMobile ? 'column' : 'row', overflow: isMobile ? 'auto' : 'hidden', paddingBottom: isMobile ? '56px' : 0 }}>
 
-        {/* Left */}
-        <div style={{ flex: 2, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+        {/* Left — hidden on mobile when Questions tab active */}
+        <div style={{ flex: isMobile ? 'none' : 2, display: isMobile && mobileTab === 'questions' ? 'none' : 'flex', flexDirection: 'column', overflow: isMobile ? 'visible' : 'hidden', minWidth: 0 }}>
 
           {/* AV Strip */}
           <div style={{ background: C.avBg, padding: '8px 12px', display: 'flex', gap: '12px', alignItems: 'center', flexShrink: 0, borderBottom: `1px solid rgba(191,219,254,0.15)` }}>
@@ -746,8 +760,8 @@ export default function App() {
             ) : (
               <>
                 <div style={{ position: 'relative', flexShrink: 0 }}>
-                  <video ref={hostVideoRef} autoPlay playsInline style={{ width: '170px', height: '100px', borderRadius: '8px', background: '#1e3a8a', objectFit: 'cover', display: hostStream ? 'block' : 'none', border: '2px solid #0891b2' }} />
-                  {!hostStream && <div style={{ width: '170px', height: '100px', borderRadius: '8px', background: '#1e3a8a', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '5px', border: '2px solid rgba(8,145,178,0.4)' }}><span style={{ fontSize: '22px' }}>📡</span><span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '11px' }}>{connectionStatus}</span></div>}
+                  <video ref={hostVideoRef} autoPlay playsInline style={{ width: isMobile ? '120px' : '170px', height: isMobile ? '75px' : '100px', borderRadius: '8px', background: '#1e3a8a', objectFit: 'cover', display: hostStream ? 'block' : 'none', border: '2px solid #0891b2' }} />
+                  {!hostStream && <div style={{ width: isMobile ? '120px' : '170px', height: isMobile ? '75px' : '100px', borderRadius: '8px', background: '#1e3a8a', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '5px', border: '2px solid rgba(8,145,178,0.4)' }}><span style={{ fontSize: '22px' }}>📡</span><span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '11px' }}>{connectionStatus}</span></div>}
                   <span style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '9px', padding: '1px 4px', borderRadius: '3px', fontWeight: '600' }}>{currentClass?.host_name}</span>
                 </div>
                 <div>
@@ -761,7 +775,7 @@ export default function App() {
           </div>
 
           {/* Scrollable */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ flex: isMobile ? 'none' : 1, overflowY: isMobile ? 'visible' : 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
 
             {/* Bookmark card */}
             <div style={{ background: `linear-gradient(135deg, ${C.headerBg} 0%, ${C.primary} 100%)`, borderRadius: '14px', padding: '16px 18px', boxShadow: `0 4px 18px rgba(37,99,235,0.22)` }}>
@@ -853,13 +867,13 @@ export default function App() {
 
             {/* Student: Poll */}
             {!isHost && pollActive && (
-              <div style={{ background: `linear-gradient(135deg, ${C.headerBg}, ${C.primary})`, borderRadius: '14px', padding: '18px', color: '#fff', textAlign: 'center', boxShadow: `0 6px 24px rgba(37,99,235,0.3)` }}>
+              <div style={{ background: `linear-gradient(135deg, ${C.headerBg}, ${C.primary})`, borderRadius: '14px', padding: isMobile ? '20px 16px' : '18px', color: '#fff', textAlign: 'center', boxShadow: `0 6px 24px rgba(37,99,235,0.3)` }}>
                 <p style={{ margin: '0 0 3px', fontSize: '11px', letterSpacing: '2px', opacity: 0.75, fontWeight: '600' }}>UNDERSTANDING CHECK</p>
-                <p style={{ margin: '0 0 14px', fontSize: '16px', fontWeight: '700' }}>Do you understand this section?</p>
+                <p style={{ margin: '0 0 16px', fontSize: isMobile ? '18px' : '16px', fontWeight: '700' }}>Do you understand this section?</p>
                 {studentPollAnswer === null
                   ? <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
-                      <button onClick={() => handlePollResponse(true)} style={{ flex: 1, maxWidth: '150px', padding: '11px', background: C.emerald, color: '#fff', border: 'none', borderRadius: '9px', cursor: 'pointer', fontWeight: '700' }}>✓ Got it! (+2 pts)</button>
-                      <button onClick={() => handlePollResponse(false)} style={{ flex: 1, maxWidth: '150px', padding: '11px', background: C.red, color: '#fff', border: 'none', borderRadius: '9px', cursor: 'pointer', fontWeight: '700' }}>✗ Not yet</button>
+                      <button onClick={() => handlePollResponse(true)} style={{ flex: 1, padding: isMobile ? '16px 11px' : '11px', background: C.emerald, color: '#fff', border: 'none', borderRadius: '9px', cursor: 'pointer', fontWeight: '700', fontSize: isMobile ? '15px' : '14px' }}>✓ Got it! (+2 pts)</button>
+                      <button onClick={() => handlePollResponse(false)} style={{ flex: 1, padding: isMobile ? '16px 11px' : '11px', background: C.red, color: '#fff', border: 'none', borderRadius: '9px', cursor: 'pointer', fontWeight: '700', fontSize: isMobile ? '15px' : '14px' }}>✗ Not yet</button>
                     </div>
                   : <div style={{ background: 'rgba(255,255,255,0.15)', borderRadius: '9px', padding: '11px' }}><p style={{ margin: 0, fontWeight: '600' }}>{studentPollAnswer ? '✓ Response sent — Got it!' : '✓ Response sent — Not yet.'}</p></div>}
               </div>
@@ -904,8 +918,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right sidebar */}
-        <div style={{ width: '275px', flexShrink: 0, background: C.card, borderLeft: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* Right sidebar — full-width tab on mobile */}
+        <div style={{ width: isMobile ? '100%' : '275px', flexShrink: 0, background: C.card, borderLeft: isMobile ? 'none' : `1px solid ${C.border}`, borderTop: isMobile ? `1px solid ${C.border}` : 'none', display: isMobile && mobileTab !== 'questions' ? 'none' : 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: isMobile ? '100%' : 0 }}>
           <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.border}`, background: C.bg }}>
             <h3 style={{ margin: 0, fontSize: '13px', fontWeight: '700', color: C.text }}>❓ Questions</h3>
           </div>
@@ -943,6 +957,24 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* ═══ Mobile Bottom Tab Bar ═══ */}
+      {isMobile && (
+        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, height: '56px', background: C.headerBg, borderTop: `2px solid ${C.headerBdr}`, display: 'flex', zIndex: 200 }}>
+          <button
+            onClick={() => setMobileTab('main')}
+            style={{ flex: 1, background: mobileTab === 'main' ? 'rgba(255,255,255,0.18)' : 'transparent', border: 'none', color: mobileTab === 'main' ? '#fff' : 'rgba(255,255,255,0.55)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>
+            <span style={{ fontSize: '20px', lineHeight: 1 }}>📚</span>Class
+          </button>
+          <button
+            onClick={() => setMobileTab('questions')}
+            style={{ flex: 1, background: mobileTab === 'questions' ? 'rgba(255,255,255,0.18)' : 'transparent', border: 'none', color: mobileTab === 'questions' ? '#fff' : 'rgba(255,255,255,0.55)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px', position: 'relative' }}>
+            <span style={{ fontSize: '20px', lineHeight: 1 }}>❓</span>
+            Questions
+            {unansweredCount > 0 && <span style={{ position: 'absolute', top: '6px', right: 'calc(50% - 22px)', background: C.amber, color: '#fff', borderRadius: '10px', fontSize: '9px', fontWeight: '800', padding: '1px 5px', lineHeight: '14px' }}>{unansweredCount}</span>}
+          </button>
+        </div>
+      )}
 
       {/* ═══ MODALS ═══ */}
 
