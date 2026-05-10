@@ -15,7 +15,7 @@ interface FileShare {
   from_name: string;
 }
 
-interface SyncPosition {
+interface BookmarkPosition {
   type: 'video' | 'page' | 'chapter' | 'custom';
   value: string;
   label: string;
@@ -28,18 +28,14 @@ const RTC_CONFIG = {
   ]
 };
 
-const POSITION_ICONS: Record<string, string> = {
-  video: '▶',
-  page: '📖',
-  chapter: '📌',
-  custom: '📍',
+const TYPE_ICONS: Record<string, string> = {
+  video: '▶', page: '📖', chapter: '📌', custom: '📍',
 };
-
-const POSITION_HINTS: Record<string, string> = {
-  video: 'e.g. 12:34 or 1:02:15',
-  page: 'e.g. 45 or 45-48',
-  chapter: 'e.g. Chapter 3 or Unit 2',
-  custom: 'e.g. Slide 7, Exercise 4...',
+const TYPE_HINTS: Record<string, string> = {
+  video: 'e.g. 12:34', page: 'e.g. 45', chapter: 'e.g. Chapter 3', custom: 'e.g. Slide 7',
+};
+const TYPE_LABELS: Record<string, string> = {
+  video: 'Video', page: 'Page', chapter: 'Chapter', custom: 'Position',
 };
 
 export default function App() {
@@ -52,18 +48,27 @@ export default function App() {
   const [showHostModal, setShowHostModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
 
+  // ── Bookmark + Position ──
   const [currentBookmark, setCurrentBookmark] = useState(0);
+  const [currentPosition, setCurrentPosition] = useState<BookmarkPosition | null>(null);
+  const [bookmarkHistory, setBookmarkHistory] = useState<Array<{ num: number; pos: BookmarkPosition }>>([]);
+  const [nextType, setNextType] = useState<BookmarkPosition['type']>('video');
+  const [nextValue, setNextValue] = useState('');
+
+  // ── Questions ──
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [questionInput, setQuestionInput] = useState('');
   const [sharedFiles, setSharedFiles] = useState<FileShare[]>([]);
   const [sessionStatus, setSessionStatus] = useState<'not_started' | 'active' | 'on_break' | 'ended'>('not_started');
 
-  // Position sync
-  const [positionType, setPositionType] = useState<SyncPosition['type']>('video');
-  const [positionValue, setPositionValue] = useState('');
-  const [currentPosition, setCurrentPosition] = useState<SyncPosition | null>(null);
-  const [syncHistory, setSyncHistory] = useState<SyncPosition[]>([]);
+  // ── Poll ──
+  const [pollActive, setPollActive] = useState(false);
+  const [pollResponses, setPollResponses] = useState({ yes: 0, no: 0 });
+  const [pollComplete, setPollComplete] = useState(false);
+  const [pollScore, setPollScore] = useState<number | null>(null);
+  const [studentPollAnswer, setStudentPollAnswer] = useState<boolean | null>(null);
 
-  // WebRTC media
+  // ── WebRTC ──
   const localStream = useRef<MediaStream | null>(null);
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const signalingChannel = useRef<any>(null);
@@ -77,7 +82,7 @@ export default function App() {
   const [connectionStatus, setConnectionStatus] = useState('Offline');
   const [mediaError, setMediaError] = useState('');
 
-  const [questionInput, setQuestionInput] = useState('');
+  // ── Form inputs ──
   const [newLoungeName, setNewLoungeName] = useState('');
   const [newHostName, setNewHostName] = useState('');
   const [guestName, setGuestName] = useState('');
@@ -89,15 +94,21 @@ export default function App() {
     if (!id) {
       id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
         const r = Math.random() * 16 | 0;
-        const v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
       });
       localStorage.setItem('lounge_session_id', id);
     }
     return id;
   });
 
-  // ─── URL-based auto-join (WhatsApp link) ──────────────────────────────────
+  // ── Derived: unanswered questions for current bookmark ──
+  const unansweredAtBookmark = questions.filter(q => q.bookmark_number === currentBookmark && !q.answered);
+  const unansweredCount = unansweredAtBookmark.length;
+  const totalResponses = pollResponses.yes + pollResponses.no;
+  const canRunPoll = unansweredCount === 0 && currentBookmark > 0;
+  const canAdvance = unansweredCount === 0 && pollComplete && (pollScore ?? 0) >= 80 && nextValue.trim().length > 0;
+
+  // ── URL auto-join ──
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get('code');
@@ -105,7 +116,6 @@ export default function App() {
       setInputCode(code);
       setCurrentLounge(null);
       setShowJoinModal(true);
-      // Clean up the URL without reloading
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
@@ -113,9 +123,7 @@ export default function App() {
   useEffect(() => { isHostRef.current = isHost; }, [isHost]);
 
   useEffect(() => {
-    if (hostVideoRef.current && hostStream) {
-      hostVideoRef.current.srcObject = hostStream;
-    }
+    if (hostVideoRef.current && hostStream) hostVideoRef.current.srcObject = hostStream;
   }, [hostStream]);
 
   useEffect(() => { fetchLounges(); }, []);
@@ -124,12 +132,10 @@ export default function App() {
     try {
       const { data } = await supabase.from('active_lounges').select('*');
       if (data) setLounges(data);
-    } catch (err) {
-      console.error('Error fetching lounges:', err);
-    }
+    } catch (e) { console.error(e); }
   };
 
-  // ─── Room Setup / Teardown ─────────────────────────────────────────────────
+  // ─── Room Setup ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (view === 'room' && currentLounge) {
@@ -138,15 +144,14 @@ export default function App() {
     }
   }, [view, currentLounge]);
 
-  const sendSignal = (event: string, payload: any) => {
+  const sendSignal = (event: string, payload: any) =>
     signalingChannel.current?.send({ type: 'broadcast', event, payload });
-  };
 
   const createConnectionForStudent = async (studentId: string) => {
     if (peerConnections.current.has(studentId)) return;
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.current.set(studentId, pc);
-    localStream.current?.getTracks().forEach(track => pc.addTrack(track, localStream.current!));
+    localStream.current?.getTracks().forEach(t => pc.addTrack(t, localStream.current!));
     pc.onicecandidate = (e) => {
       if (e.candidate) sendSignal('ice-candidate', { from: myId, target: studentId, candidate: e.candidate.toJSON() });
     };
@@ -154,8 +159,8 @@ export default function App() {
       if (pc.connectionState === 'connected') {
         setConnectedStudents(prev => [...new Set([...prev, studentId])]);
         setConnectionStatus('Live (P2P)');
-        // Send current position to newly connected student
-        if (currentPosition) sendSignal('position-sync', { position: currentPosition, to: studentId });
+        // Send current position to newly joined student
+        if (currentPosition) sendSignal('bookmark-sync', { bookmark: currentBookmark, position: currentPosition, to: studentId });
       } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
         setConnectedStudents(prev => prev.filter(id => id !== studentId));
       }
@@ -168,12 +173,9 @@ export default function App() {
   const handleIncomingOffer = async (hostId: string, sdp: any) => {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.current.set(hostId, pc);
-    localStream.current?.getTracks().forEach(track => pc.addTrack(track, localStream.current!));
+    localStream.current?.getTracks().forEach(t => pc.addTrack(t, localStream.current!));
     pc.ontrack = (e) => {
-      if (e.streams?.[0]) {
-        setHostStream(e.streams[0]);
-        if (hostVideoRef.current) hostVideoRef.current.srcObject = e.streams[0];
-      }
+      if (e.streams?.[0]) { setHostStream(e.streams[0]); if (hostVideoRef.current) hostVideoRef.current.srcObject = e.streams[0]; }
     };
     pc.onicecandidate = (e) => {
       if (e.candidate) sendSignal('ice-candidate', { from: myId, target: hostId, candidate: e.candidate.toJSON() });
@@ -190,11 +192,11 @@ export default function App() {
 
   const setupRoom = async () => {
     const dbc = supabase.channel(`lounge-db-${currentLounge.id}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'bookmarks' }, (p) => {
-        setCurrentBookmark(p.new.bookmark_number);
-      })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'questions' }, (p) => {
-        setQuestions(prev => [p.new as Question, ...prev]);
+        setQuestions(prev => {
+          if (prev.some(q => q.id === p.new.id)) return prev;
+          return [p.new as Question, ...prev];
+        });
       })
       .subscribe();
     dbChannel.current = dbc;
@@ -208,65 +210,71 @@ export default function App() {
       await createConnectionForStudent(payload.peerId);
     });
     sc.on('broadcast', { event: 'offer' }, async ({ payload }: any) => {
-      if (isHostRef.current) return;
-      if (payload.to !== myId) return;
+      if (isHostRef.current || payload.to !== myId) return;
       await handleIncomingOffer(payload.from, payload.sdp);
     });
     sc.on('broadcast', { event: 'answer' }, async ({ payload }: any) => {
-      if (!isHostRef.current) return;
-      if (payload.to !== myId) return;
+      if (!isHostRef.current || payload.to !== myId) return;
       const pc = peerConnections.current.get(payload.from);
       if (pc) await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
     });
     sc.on('broadcast', { event: 'ice-candidate' }, async ({ payload }: any) => {
       if (payload.target !== myId) return;
       const pc = peerConnections.current.get(payload.from);
-      if (pc && payload.candidate) {
-        try { await pc.addIceCandidate(new RTCIceCandidate(payload.candidate)); } catch (_) {}
-      }
+      if (pc && payload.candidate) { try { await pc.addIceCandidate(new RTCIceCandidate(payload.candidate)); } catch (_) {} }
     });
-    // Position sync received by students
-    sc.on('broadcast', { event: 'position-sync' }, ({ payload }: any) => {
+
+    // Bookmark sync (received by students)
+    sc.on('broadcast', { event: 'bookmark-sync' }, ({ payload }: any) => {
       if (isHostRef.current) return;
       if (payload.to && payload.to !== myId) return;
+      setCurrentBookmark(payload.bookmark);
       setCurrentPosition(payload.position);
-      setSyncHistory(prev => [payload.position, ...prev.slice(0, 9)]);
+      setBookmarkHistory(prev => [{ num: payload.bookmark, pos: payload.position }, ...prev]);
+      // Reset poll state for this new section
+      setPollActive(false);
+      setPollComplete(false);
+      setPollScore(null);
+      setStudentPollAnswer(null);
+    });
+
+    // Poll events
+    sc.on('broadcast', { event: 'poll-start' }, () => {
+      if (isHostRef.current) return;
+      setStudentPollAnswer(null);
+      setPollActive(true);
+    });
+    sc.on('broadcast', { event: 'poll-response' }, ({ payload }: any) => {
+      if (!isHostRef.current) return;
+      setPollResponses(prev => payload.understood ? { ...prev, yes: prev.yes + 1 } : { ...prev, no: prev.no + 1 });
+    });
+    sc.on('broadcast', { event: 'poll-end' }, () => {
+      if (isHostRef.current) return;
+      setPollActive(false);
     });
 
     await sc.subscribe();
     signalingChannel.current = sc;
 
+    // Get media
     if (isHostRef.current) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localStream.current = stream;
-        setCamActive(true);
-        setMicActive(true);
+        localStream.current = stream; setCamActive(true); setMicActive(true);
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
         setMediaError('');
       } catch {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-          localStream.current = stream;
-          setMicActive(true);
-          setMediaError('Camera not available — audio only.');
-        } catch {
-          setMediaError('Microphone/camera access denied.');
-        }
+          localStream.current = stream; setMicActive(true); setMediaError('Camera unavailable — audio only.');
+        } catch { setMediaError('Microphone/camera access denied.'); }
       }
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        localStream.current = stream;
-        setMicActive(true);
-        setMediaError('');
-      } catch {
-        setMediaError('Microphone access denied.');
-      }
-      setTimeout(() => {
-        sendSignal('peer-join', { peerId: myId });
-        setConnectionStatus('Connecting...');
-      }, 800);
+        localStream.current = stream; setMicActive(true); setMediaError('');
+      } catch { setMediaError('Microphone access denied.'); }
+      setTimeout(() => { sendSignal('peer-join', { peerId: myId }); setConnectionStatus('Connecting...'); }, 800);
     }
   };
 
@@ -277,54 +285,68 @@ export default function App() {
     peerConnections.current.clear();
     if (dbChannel.current) { supabase.removeChannel(dbChannel.current); dbChannel.current = null; }
     if (signalingChannel.current) { supabase.removeChannel(signalingChannel.current); signalingChannel.current = null; }
-    setHostStream(null);
-    setConnectedStudents([]);
-    setMicActive(false);
-    setCamActive(false);
-    setConnectionStatus('Offline');
-    setMediaError('');
-    setCurrentPosition(null);
-    setSyncHistory([]);
+    setHostStream(null); setConnectedStudents([]); setMicActive(false); setCamActive(false);
+    setConnectionStatus('Offline'); setMediaError('');
+    setCurrentPosition(null); setBookmarkHistory([]);
+    setPollActive(false); setPollComplete(false); setPollScore(null);
+    setStudentPollAnswer(null); setPollResponses({ yes: 0, no: 0 });
   };
 
-  const toggleMic = () => {
-    localStream.current?.getAudioTracks().forEach(t => { t.enabled = !t.enabled; });
-    setMicActive(prev => !prev);
+  const toggleMic = () => { localStream.current?.getAudioTracks().forEach(t => { t.enabled = !t.enabled; }); setMicActive(p => !p); };
+  const toggleCam = () => { localStream.current?.getVideoTracks().forEach(t => { t.enabled = !t.enabled; }); setCamActive(p => !p); };
+
+  // ─── Bookmark / Poll Handlers ─────────────────────────────────────────────
+
+  const handleSetFirstBookmark = async () => {
+    if (!nextValue.trim()) return alert('Please enter a position for the first Bookmark.');
+    await advanceBookmark();
   };
 
-  const toggleCam = () => {
-    localStream.current?.getVideoTracks().forEach(t => { t.enabled = !t.enabled; });
-    setCamActive(prev => !prev);
+  const handleNextBookmark = async () => {
+    if (!canAdvance) return;
+    await advanceBookmark();
   };
 
-  // ─── Position Sync ────────────────────────────────────────────────────────
-
-  const handleSyncPosition = () => {
-    if (!positionValue.trim()) return alert('Please enter a position value.');
-    const pos: SyncPosition = {
-      type: positionType,
-      value: positionValue.trim(),
-      label: `${POSITION_ICONS[positionType]} ${positionType === 'video' ? 'Video' : positionType === 'page' ? 'Page' : positionType === 'chapter' ? 'Chapter' : 'Position'}: ${positionValue.trim()}`
+  const advanceBookmark = async () => {
+    const nextNum = currentBookmark + 1;
+    const pos: BookmarkPosition = {
+      type: nextType,
+      value: nextValue.trim(),
+      label: `${TYPE_ICONS[nextType]} ${TYPE_LABELS[nextType]}: ${nextValue.trim()}`
     };
+    try {
+      await supabase.from('bookmarks').insert([{
+        lounge_id: currentLounge.id, bookmark_number: nextNum,
+        timestamp: Date.now(), created_at: new Date().toISOString()
+      }]);
+    } catch (e) { console.error('Bookmark DB error:', e); }
+
+    sendSignal('bookmark-sync', { bookmark: nextNum, position: pos });
+    setCurrentBookmark(nextNum);
     setCurrentPosition(pos);
-    setSyncHistory(prev => [pos, ...prev.slice(0, 9)]);
-    sendSignal('position-sync', { position: pos });
-    setPositionValue('');
+    setBookmarkHistory(prev => [{ num: nextNum, pos }, ...prev]);
+    setNextValue('');
+    // Reset poll state for new section
+    setPollActive(false); setPollComplete(false); setPollScore(null); setPollResponses({ yes: 0, no: 0 });
   };
 
-  // ─── WhatsApp Share ───────────────────────────────────────────────────────
-
-  const handleShareWhatsApp = () => {
-    const code = generatedCode || currentLounge?.entry_code;
-    const joinUrl = `${window.location.origin}?code=${code}`;
-    const text = `Join "${currentLounge?.lounge_name}" on Digital Lounge!\n\nEntry Code: *${code}*\n\nOr tap this link to join directly:\n${joinUrl}\n\n_(No app needed — opens in your browser)_`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  const handleStartPoll = () => {
+    if (!canRunPoll) return;
+    setPollActive(true); setPollComplete(false); setPollResponses({ yes: 0, no: 0 }); setPollScore(null);
+    sendSignal('poll-start', { bookmark: currentBookmark });
   };
 
-  const handleCopyLink = () => {
-    const code = generatedCode || currentLounge?.entry_code;
-    const joinUrl = `${window.location.origin}?code=${code}`;
-    navigator.clipboard.writeText(joinUrl).then(() => alert('Join link copied to clipboard!'));
+  const handleClosePoll = () => {
+    const total = pollResponses.yes + pollResponses.no;
+    const score = total > 0 ? Math.round((pollResponses.yes / total) * 100) : 0;
+    setPollScore(score); setPollComplete(true); setPollActive(false);
+    sendSignal('poll-end', {});
+  };
+
+  const handlePollResponse = (understood: boolean) => {
+    if (studentPollAnswer !== null) return;
+    setStudentPollAnswer(understood);
+    sendSignal('poll-response', { peerId: myId, understood });
   };
 
   // ─── Other Handlers ────────────────────────────────────────────────────────
@@ -336,15 +358,8 @@ export default function App() {
         lounge_name: newLoungeName, host_name: newHostName, host_id: myId, entry_code: code
       }]).select();
       if (error) throw error;
-      if (data) {
-        setGeneratedCode(code);
-        setCurrentLounge(data[0]);
-        isHostRef.current = true;
-        setIsHost(true);
-        setView('room');
-        setShowHostModal(false);
-      }
-    } catch (error) { alert('Error creating lounge: ' + (error as any)?.message); }
+      if (data) { setGeneratedCode(code); setCurrentLounge(data[0]); isHostRef.current = true; setIsHost(true); setView('room'); setShowHostModal(false); }
+    } catch (e) { alert('Error: ' + (e as any)?.message); }
   };
 
   const handleJoinLounge = async () => {
@@ -353,19 +368,52 @@ export default function App() {
       if (!inputCode.trim()) return alert('Please enter the entry code.');
       let lounge = currentLounge;
       if (lounge) {
-        if (inputCode.trim() !== lounge.entry_code.toString())
-          return alert('Wrong entry code for this lounge. Please check the code and try again.');
+        if (inputCode.trim() !== lounge.entry_code.toString()) return alert('Wrong entry code.');
       } else {
         const { data, error } = await supabase.from('active_lounges').select('*').eq('entry_code', inputCode.trim()).single();
-        if (error || !data) { console.error('Join error:', error); return alert('No lounge found with that entry code.'); }
+        if (error || !data) return alert('No lounge found with that entry code.');
         lounge = data;
       }
-      isHostRef.current = false;
-      setIsHost(false);
-      setCurrentLounge(lounge);
-      setView('room');
-      setShowJoinModal(false);
-    } catch (error) { alert('Error joining lounge: ' + (error as any)?.message); }
+      isHostRef.current = false; setIsHost(false); setCurrentLounge(lounge); setView('room'); setShowJoinModal(false);
+    } catch (e) { alert('Error: ' + (e as any)?.message); }
+  };
+
+  const handleSendQuestion = async () => {
+    try {
+      if (!questionInput.trim()) return alert('Question cannot be empty');
+      const q: Question = {
+        user_name: isHost ? newHostName : (guestName || 'Student'),
+        question_text: questionInput, bookmark_number: currentBookmark, answered: false
+      };
+      const { data, error } = await supabase.from('questions').insert([{ ...q, lounge_id: currentLounge.id, peer_id: myId }]).select();
+      if (error) throw error;
+      if (data) setQuestions(prev => [data[0] as Question, ...prev]);
+      else setQuestions(prev => [q, ...prev]);
+      setQuestionInput('');
+    } catch (e) { alert('Error: ' + (e as any)?.message); }
+  };
+
+  const handleAnswerQuestion = async (questionId: string) => {
+    try {
+      const { error } = await supabase.from('questions').update({ answered: true }).eq('id', questionId);
+      if (error) throw error;
+      setQuestions(prev => prev.map(q => q.id === questionId ? { ...q, answered: true } : q));
+    } catch (e) { alert('Error: ' + (e as any)?.message); }
+  };
+
+  const handleShareFile = async () => {
+    try {
+      const name = prompt('File / Resource Name:');
+      const url = prompt('Link (URL):');
+      if (!name || !url) return;
+      const f: FileShare = { file_name: name, file_url: url, from_name: isHost ? newHostName : (guestName || 'Student') };
+      const { error } = await supabase.from('file_shares').insert([{
+        lounge_id: currentLounge.id, from_peer_id: myId, from_name: f.from_name,
+        to_peer_id: null, file_name: name, file_url: url, created_at: new Date().toISOString()
+      }]);
+      if (error) throw error;
+      setSharedFiles(prev => [f, ...prev]);
+    } catch (e) { alert('Error: ' + (e as any)?.message); }
   };
 
   const handleStartClass = async () => {
@@ -376,92 +424,54 @@ export default function App() {
       }]);
       if (error) throw error;
       setSessionStatus('active');
-    } catch (error) { alert('Error starting class: ' + (error as any)?.message); }
-  };
-
-  const handleSendQuestion = async () => {
-    try {
-      if (!questionInput.trim()) return alert('Question cannot be empty');
-      const payload: Question = {
-        user_name: isHost ? newHostName : (guestName || 'Student'),
-        question_text: questionInput, bookmark_number: currentBookmark, answered: false
-      };
-      const { error } = await supabase.from('questions').insert([{ ...payload, lounge_id: currentLounge.id, peer_id: myId }]);
-      if (error) throw error;
-      setQuestions(prev => [payload, ...prev]);
-      setQuestionInput('');
-    } catch (error) { alert('Error sending question: ' + (error as any)?.message); }
-  };
-
-  const handleAnswerQuestion = async (questionId: string) => {
-    try {
-      const { error } = await supabase.from('questions').update({ answered: true }).eq('id', questionId);
-      if (error) throw error;
-      setQuestions(prev => prev.map(q => q.id === questionId ? { ...q, answered: true } : q));
-    } catch (error) { alert('Error answering question: ' + (error as any)?.message); }
-  };
-
-  const handleShareFile = async () => {
-    try {
-      const name = prompt('File Name:');
-      const url = prompt('Link (URL):');
-      if (!name || !url) return;
-      const payload: FileShare = { file_name: name, file_url: url, from_name: isHost ? newHostName : (guestName || 'Student') };
-      const { error } = await supabase.from('file_shares').insert([{
-        lounge_id: currentLounge.id, from_peer_id: myId, from_name: payload.from_name,
-        to_peer_id: null, file_name: name, file_url: url, created_at: new Date().toISOString()
-      }]);
-      if (error) throw error;
-      setSharedFiles(prev => [payload, ...prev]);
-    } catch (error) { alert('Error sharing file: ' + (error as any)?.message); }
+    } catch (e) { alert('Error: ' + (e as any)?.message); }
   };
 
   const handleBreak = async () => {
     try {
-      const { error } = await supabase.from('class_sessions')
-        .update({ status: 'on_break', last_updated: new Date().toISOString() }).eq('lounge_id', currentLounge.id);
-      if (error) throw error;
+      await supabase.from('class_sessions').update({ status: 'on_break', last_updated: new Date().toISOString() }).eq('lounge_id', currentLounge.id);
       setSessionStatus('on_break');
-    } catch (error) { alert('Error: ' + (error as any)?.message); }
+    } catch (e) { alert('Error: ' + (e as any)?.message); }
   };
 
   const handleResume = async () => {
     try {
-      const { error } = await supabase.from('class_sessions')
-        .update({ status: 'active', last_updated: new Date().toISOString() }).eq('lounge_id', currentLounge.id);
-      if (error) throw error;
+      await supabase.from('class_sessions').update({ status: 'active', last_updated: new Date().toISOString() }).eq('lounge_id', currentLounge.id);
       setSessionStatus('active');
-    } catch (error) { alert('Error: ' + (error as any)?.message); }
+    } catch (e) { alert('Error: ' + (e as any)?.message); }
   };
 
-  const handleDeleteLounge = async (loungeId: string) => {
-    try {
-      const { error } = await supabase.from('active_lounges').delete().eq('id', loungeId);
-      if (error) throw error;
-      await fetchLounges();
-    } catch (error) { alert('Error ending lounge: ' + (error as any)?.message); }
+  const handleDeleteLounge = async (id: string) => {
+    try { await supabase.from('active_lounges').delete().eq('id', id); await fetchLounges(); }
+    catch (e) { alert('Error: ' + (e as any)?.message); }
   };
 
   const handleExit = async () => {
     try {
       if (isHost && currentLounge) {
-        const endIt = window.confirm("Do you want to end this lounge? Click Cancel to just leave without ending it.");
-        if (endIt) await supabase.from('active_lounges').delete().eq('id', currentLounge.id);
+        const end = window.confirm("End this lounge for everyone? Cancel to just leave.");
+        if (end) await supabase.from('active_lounges').delete().eq('id', currentLounge.id);
       }
-      setView('lobby');
-      setCurrentLounge(null);
-      isHostRef.current = false;
-      setIsHost(false);
-      setGeneratedCode('');
-      setQuestions([]);
-      setSharedFiles([]);
-      setCurrentBookmark(0);
-      setSessionStatus('not_started');
+      setView('lobby'); setCurrentLounge(null); isHostRef.current = false; setIsHost(false);
+      setGeneratedCode(''); setQuestions([]); setSharedFiles([]); setCurrentBookmark(0); setSessionStatus('not_started');
       await fetchLounges();
-    } catch (error) { console.error('Error exiting:', error); }
+    } catch (e) { console.error(e); }
   };
 
-  // ─── Lobby View ───────────────────────────────────────────────────────────
+  const handleShareWhatsApp = () => {
+    const code = generatedCode || currentLounge?.entry_code;
+    const url = `${window.location.origin}?code=${code}`;
+    const text = `Join "${currentLounge?.lounge_name}" on Digital Lounge!\n\nEntry Code: *${code}*\n\nTap to join (no app needed):\n${url}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  };
+
+  const handleCopyLink = () => {
+    const code = generatedCode || currentLounge?.entry_code;
+    navigator.clipboard.writeText(`${window.location.origin}?code=${code}`)
+      .then(() => alert('Link copied!'));
+  };
+
+  // ─── LOBBY ────────────────────────────────────────────────────────────────
 
   if (view === 'lobby') {
     return (
@@ -482,32 +492,23 @@ export default function App() {
         <div style={{ maxWidth: '600px', margin: '40px auto' }}>
           <h3>Active Sessions</h3>
           {lounges.length === 0 ? <p style={{ color: '#999' }}>No active sessions</p> : (
-            lounges.map((lounge: any) => (
-              <div key={lounge.id} style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '8px', marginBottom: '10px', textAlign: 'left' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div>
-                    <h4 style={{ margin: '0 0 4px 0' }}>{lounge.lounge_name}</h4>
-                    <p style={{ margin: '0 0 10px 0', color: '#555' }}>Host: {lounge.host_name}</p>
-                  </div>
-                  {lounge.host_id === myId && <span style={{ background: '#28a745', color: '#fff', fontSize: '11px', padding: '3px 8px', borderRadius: '4px', fontWeight: 'bold' }}>YOUR LOUNGE</span>}
+            lounges.map((l: any) => (
+              <div key={l.id} style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '8px', marginBottom: '10px', textAlign: 'left' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <div><h4 style={{ margin: '0 0 4px' }}>{l.lounge_name}</h4><p style={{ margin: '0 0 10px', color: '#555' }}>Host: {l.host_name}</p></div>
+                  {l.host_id === myId && <span style={{ background: '#28a745', color: '#fff', fontSize: '11px', padding: '3px 8px', borderRadius: '4px', fontWeight: 'bold', alignSelf: 'flex-start' }}>YOUR LOUNGE</span>}
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  {lounge.host_id === myId ? (
+                  {l.host_id === myId ? (
                     <>
-                      <button onClick={() => { setCurrentLounge(lounge); setGeneratedCode(lounge.entry_code); isHostRef.current = true; setIsHost(true); setView('room'); }}
-                        style={{ padding: '8px 15px', background: '#28a745', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}>
-                        Rejoin as Host
-                      </button>
-                      <button onClick={() => { if (window.confirm('End this lounge?')) handleDeleteLounge(lounge.id); }}
-                        style={{ padding: '8px 15px', background: '#dc3545', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}>
-                        End
-                      </button>
+                      <button onClick={() => { setCurrentLounge(l); setGeneratedCode(l.entry_code); isHostRef.current = true; setIsHost(true); setView('room'); }}
+                        style={{ padding: '8px 14px', background: '#28a745', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}>Rejoin as Host</button>
+                      <button onClick={() => { if (window.confirm('End this lounge?')) handleDeleteLounge(l.id); }}
+                        style={{ padding: '8px 14px', background: '#dc3545', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}>End</button>
                     </>
                   ) : (
-                    <button onClick={() => { setCurrentLounge(lounge); setInputCode(''); setShowJoinModal(true); }}
-                      style={{ padding: '8px 15px', background: '#007bff', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}>
-                      Join
-                    </button>
+                    <button onClick={() => { setCurrentLounge(l); setInputCode(''); setShowJoinModal(true); }}
+                      style={{ padding: '8px 14px', background: '#007bff', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}>Join</button>
                   )}
                 </div>
               </div>
@@ -518,7 +519,7 @@ export default function App() {
         {showHostModal && (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
             <div style={{ background: '#fff', padding: '30px', borderRadius: '12px', width: '350px' }}>
-              <h3>Host New Lounge</h3>
+              <h3 style={{ marginTop: 0 }}>Host New Lounge</h3>
               <input placeholder="Lounge Name" value={newLoungeName} onChange={e => setNewLoungeName(e.target.value)}
                 style={{ width: '100%', padding: '10px', marginBottom: '10px', boxSizing: 'border-box', borderRadius: '5px', border: '1px solid #ccc' }} />
               <input placeholder="Your Name" value={newHostName} onChange={e => setNewHostName(e.target.value)}
@@ -527,10 +528,7 @@ export default function App() {
                 style={{ width: '100%', padding: '10px', background: '#000', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none', fontWeight: 'bold', marginBottom: '10px' }}>
                 Launch
               </button>
-              <button onClick={() => setShowHostModal(false)}
-                style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: '14px' }}>
-                Cancel
-              </button>
+              <button onClick={() => setShowHostModal(false)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer' }}>Cancel</button>
             </div>
           </div>
         )}
@@ -538,20 +536,17 @@ export default function App() {
         {showJoinModal && (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
             <div style={{ background: '#fff', padding: '30px', borderRadius: '12px', width: '350px' }}>
-              <h3>Join Lounge</h3>
-              <p style={{ color: '#666', fontSize: '13px', marginTop: 0 }}>Open your content on this device — the host will sync your position.</p>
+              <h3 style={{ marginTop: 0 }}>Join Lounge</h3>
+              <p style={{ color: '#666', fontSize: '13px', marginTop: 0 }}>Have your content ready on this device — the host will sync your position.</p>
               <input placeholder="Your Name" value={guestName} onChange={e => setGuestName(e.target.value)}
                 style={{ width: '100%', padding: '10px', marginBottom: '10px', boxSizing: 'border-box', borderRadius: '5px', border: '1px solid #ccc' }} />
               <input placeholder="Entry Code" value={inputCode} onChange={e => setInputCode(e.target.value)}
-                style={{ width: '100%', padding: '10px', marginBottom: '15px', boxSizing: 'border-box', borderRadius: '5px', border: '1px solid #ccc', fontSize: '18px', textAlign: 'center' }} />
+                style={{ width: '100%', padding: '10px', marginBottom: '15px', boxSizing: 'border-box', borderRadius: '5px', border: '1px solid #ccc', fontSize: '20px', textAlign: 'center', letterSpacing: '4px' }} />
               <button onClick={handleJoinLounge}
                 style={{ width: '100%', padding: '10px', background: '#007bff', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none', fontWeight: 'bold', marginBottom: '10px' }}>
                 Join
               </button>
-              <button onClick={() => setShowJoinModal(false)}
-                style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: '14px' }}>
-                Cancel
-              </button>
+              <button onClick={() => setShowJoinModal(false)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer' }}>Cancel</button>
             </div>
           </div>
         )}
@@ -559,241 +554,366 @@ export default function App() {
     );
   }
 
-  // ─── Room View ────────────────────────────────────────────────────────────
+  // ─── ROOM ─────────────────────────────────────────────────────────────────
 
   const code = generatedCode || currentLounge?.entry_code;
+  const currentBmQs = questions.filter(q => q.bookmark_number === currentBookmark);
+  const pastQs = questions.filter(q => q.bookmark_number !== currentBookmark);
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', fontFamily: 'sans-serif', background: '#f8f9fa' }}>
-      {/* Header */}
-      <header style={{ background: '#111', color: '#fff', padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <strong>{currentLounge?.lounge_name}</strong>
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', fontFamily: 'sans-serif', background: '#f5f5f5' }}>
+
+      {/* ── Header ── */}
+      <header style={{ background: '#111', color: '#fff', padding: '9px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <strong style={{ fontSize: '15px' }}>{currentLounge?.lounge_name}</strong>
           <span style={{ color: '#aaa', fontSize: '12px' }}>Code: {code}</span>
-          {isHost && <span style={{ background: '#28a745', padding: '2px 7px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold' }}>HOST</span>}
-          <span style={{ color: connectionStatus === 'Live (P2P)' ? '#4caf50' : '#aaa', fontSize: '11px' }}>● {connectionStatus}</span>
+          {isHost && <span style={{ background: '#28a745', padding: '2px 7px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>HOST</span>}
+          <span style={{ fontSize: '11px', color: connectionStatus === 'Live (P2P)' ? '#4caf50' : '#aaa' }}>● {connectionStatus}</span>
         </div>
-        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-          {isHost && (
-            <>
-              <button onClick={handleShareWhatsApp}
-                style={{ background: '#25D366', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '5px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
-                📲 WhatsApp
-              </button>
-              <button onClick={handleCopyLink}
-                style={{ background: '#555', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '5px', cursor: 'pointer', fontSize: '13px' }}>
-                🔗 Copy Link
-              </button>
-            </>
-          )}
-          {isHost && sessionStatus === 'not_started' && (
-            <button onClick={handleStartClass} style={{ background: '#28a745', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '5px', cursor: 'pointer' }}>Start</button>
-          )}
-          {isHost && sessionStatus === 'active' && (
-            <button onClick={handleBreak} style={{ background: '#ff9800', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '5px', cursor: 'pointer' }}>Break</button>
-          )}
-          {isHost && sessionStatus === 'on_break' && (
-            <button onClick={handleResume} style={{ background: '#2196f3', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '5px', cursor: 'pointer' }}>Resume</button>
-          )}
-          <button onClick={handleExit} style={{ background: '#dc3545', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '5px', cursor: 'pointer' }}>Exit</button>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          {isHost && <>
+            <button onClick={handleShareWhatsApp} style={{ background: '#25D366', color: '#fff', border: 'none', padding: '5px 11px', borderRadius: '5px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📲 WhatsApp</button>
+            <button onClick={handleCopyLink} style={{ background: '#555', color: '#fff', border: 'none', padding: '5px 11px', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' }}>🔗 Link</button>
+            {sessionStatus === 'not_started' && <button onClick={handleStartClass} style={{ background: '#28a745', color: '#fff', border: 'none', padding: '5px 11px', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' }}>Start</button>}
+            {sessionStatus === 'active' && <button onClick={handleBreak} style={{ background: '#ff9800', color: '#fff', border: 'none', padding: '5px 11px', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' }}>Break</button>}
+            {sessionStatus === 'on_break' && <button onClick={handleResume} style={{ background: '#2196f3', color: '#fff', border: 'none', padding: '5px 11px', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' }}>Resume</button>}
+          </>}
+          <button onClick={handleExit} style={{ background: '#dc3545', color: '#fff', border: 'none', padding: '5px 11px', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' }}>Exit</button>
         </div>
       </header>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Main Area */}
-        <div style={{ flex: 2, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-          {/* Audio/Video Bar */}
-          <div style={{ background: '#1a1a1a', padding: '10px 14px', display: 'flex', gap: '10px', alignItems: 'center', flexShrink: 0 }}>
+        {/* ── Left: Main Panel ── */}
+        <div style={{ flex: 2, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+
+          {/* Audio/Video Strip */}
+          <div style={{ background: '#1c1c1c', padding: '8px 12px', display: 'flex', gap: '10px', alignItems: 'center', flexShrink: 0 }}>
             {isHost ? (
               <>
                 <div style={{ position: 'relative', flexShrink: 0 }}>
                   <video ref={localVideoRef} autoPlay muted playsInline
-                    style={{ width: '160px', height: '100px', borderRadius: '6px', background: '#333', objectFit: 'cover', display: camActive ? 'block' : 'none' }} />
+                    style={{ width: '150px', height: '95px', borderRadius: '6px', background: '#333', objectFit: 'cover', display: camActive ? 'block' : 'none' }} />
                   {!camActive && (
-                    <div style={{ width: '160px', height: '100px', borderRadius: '6px', background: '#333', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <span style={{ fontSize: '30px' }}>🎙️</span>
+                    <div style={{ width: '150px', height: '95px', borderRadius: '6px', background: '#333', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <span style={{ fontSize: '28px' }}>🎙️</span>
                     </div>
                   )}
-                  <div style={{ position: 'absolute', bottom: '5px', left: '5px', display: 'flex', gap: '4px' }}>
-                    <button onClick={toggleMic}
-                      style={{ background: micActive ? '#28a745' : '#dc3545', border: 'none', borderRadius: '3px', padding: '3px 6px', cursor: 'pointer', fontSize: '12px' }}>
+                  <div style={{ position: 'absolute', bottom: '4px', left: '4px', display: 'flex', gap: '3px' }}>
+                    <button onClick={toggleMic} title={micActive ? 'Mute' : 'Unmute'}
+                      style={{ background: micActive ? '#28a745' : '#dc3545', border: 'none', borderRadius: '3px', padding: '2px 5px', cursor: 'pointer', fontSize: '12px' }}>
                       {micActive ? '🎙️' : '🔇'}
                     </button>
-                    <button onClick={toggleCam}
-                      style={{ background: camActive ? '#28a745' : '#dc3545', border: 'none', borderRadius: '3px', padding: '3px 6px', cursor: 'pointer', fontSize: '12px' }}>
+                    <button onClick={toggleCam} title={camActive ? 'Camera off' : 'Camera on'}
+                      style={{ background: camActive ? '#28a745' : '#dc3545', border: 'none', borderRadius: '3px', padding: '2px 5px', cursor: 'pointer', fontSize: '12px' }}>
                       {camActive ? '📹' : '📷'}
                     </button>
                   </div>
-                  <span style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '10px', padding: '1px 5px', borderRadius: '3px' }}>You</span>
+                  <span style={{ position: 'absolute', top: '3px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '9px', padding: '1px 4px', borderRadius: '3px' }}>You</span>
                 </div>
                 <div style={{ color: '#ccc', fontSize: '12px' }}>
-                  <p style={{ margin: '0 0 6px 0', color: '#fff', fontWeight: 'bold' }}>Students: {connectedStudents.length}</p>
+                  <p style={{ margin: '0 0 4px', color: '#fff', fontWeight: 'bold', fontSize: '13px' }}>Students: {connectedStudents.length}</p>
                   {connectedStudents.length === 0
                     ? <span style={{ color: '#888' }}>Waiting for students...</span>
                     : connectedStudents.map((id, i) => (
-                      <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#333', padding: '3px 8px', borderRadius: '20px', marginRight: '5px', marginBottom: '4px', fontSize: '11px' }}>
-                        <span style={{ color: '#4caf50' }}>🎙️</span> Student {i + 1}
+                      <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#333', padding: '2px 8px', borderRadius: '20px', marginRight: '4px', fontSize: '11px' }}>
+                        <span style={{ color: '#4caf50' }}>●</span> Student {i + 1}
                       </span>
                     ))}
-                  {mediaError && <p style={{ color: '#ff9800', margin: '6px 0 0 0' }}>⚠️ {mediaError}</p>}
+                  {mediaError && <p style={{ color: '#ff9800', margin: '4px 0 0', fontSize: '11px' }}>⚠ {mediaError}</p>}
                 </div>
               </>
             ) : (
               <>
                 <div style={{ position: 'relative', flexShrink: 0 }}>
                   <video ref={hostVideoRef} autoPlay playsInline
-                    style={{ width: '200px', height: '120px', borderRadius: '6px', background: '#333', objectFit: 'cover', display: hostStream ? 'block' : 'none' }} />
+                    style={{ width: '180px', height: '110px', borderRadius: '6px', background: '#333', objectFit: 'cover', display: hostStream ? 'block' : 'none' }} />
                   {!hostStream && (
-                    <div style={{ width: '200px', height: '120px', borderRadius: '6px', background: '#333', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-                      <span style={{ fontSize: '24px' }}>📡</span>
-                      <span style={{ color: '#888', fontSize: '11px' }}>{connectionStatus === 'Connecting...' ? 'Connecting...' : 'Waiting for host'}</span>
+                    <div style={{ width: '180px', height: '110px', borderRadius: '6px', background: '#333', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+                      <span style={{ fontSize: '22px' }}>📡</span>
+                      <span style={{ color: '#888', fontSize: '11px' }}>{connectionStatus === 'Connecting...' ? 'Connecting...' : 'Awaiting host'}</span>
                     </div>
                   )}
-                  <span style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '10px', padding: '1px 5px', borderRadius: '3px' }}>
-                    {currentLounge?.host_name}
-                  </span>
+                  <span style={{ position: 'absolute', top: '3px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '9px', padding: '1px 4px', borderRadius: '3px' }}>{currentLounge?.host_name}</span>
                 </div>
                 <div style={{ color: '#ccc' }}>
                   <button onClick={toggleMic}
-                    style={{ background: micActive ? '#28a745' : '#dc3545', border: 'none', borderRadius: '6px', padding: '8px 14px', cursor: 'pointer', fontSize: '14px', color: '#fff', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    style={{ background: micActive ? '#28a745' : '#dc3545', border: 'none', borderRadius: '6px', padding: '7px 14px', cursor: 'pointer', fontSize: '13px', color: '#fff', fontWeight: 'bold' }}>
                     {micActive ? '🎙️ Mic On' : '🔇 Mic Off'}
                   </button>
-                  <p style={{ color: connectionStatus === 'Live (P2P)' ? '#4caf50' : '#888', fontSize: '11px', margin: '6px 0 0 0' }}>
-                    {connectionStatus === 'Live (P2P)' ? '✓ Connected to host' : connectionStatus}
+                  <p style={{ margin: '5px 0 0', fontSize: '11px', color: connectionStatus === 'Live (P2P)' ? '#4caf50' : '#888' }}>
+                    {connectionStatus === 'Live (P2P)' ? '✓ Connected' : connectionStatus}
                   </p>
-                  {mediaError && <p style={{ color: '#ff9800', fontSize: '11px', margin: '4px 0 0 0' }}>⚠️ {mediaError}</p>}
+                  {mediaError && <p style={{ color: '#ff9800', margin: '4px 0 0', fontSize: '11px' }}>⚠ {mediaError}</p>}
                 </div>
               </>
             )}
           </div>
 
-          {/* Position Sync Panel */}
-          {isHost ? (
-            <div style={{ background: '#fff', borderBottom: '1px solid #eee', padding: '12px 16px', flexShrink: 0 }}>
-              <p style={{ margin: '0 0 8px 0', fontWeight: 'bold', fontSize: '13px', color: '#333' }}>
-                📍 Sync Content Position
-                <span style={{ marginLeft: '8px', fontWeight: 'normal', color: '#888', fontSize: '12px' }}>
-                  Each student uses their own device — you're just telling them where to navigate.
-                </span>
-              </p>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                <select value={positionType} onChange={e => setPositionType(e.target.value as SyncPosition['type'])}
-                  style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '14px', cursor: 'pointer' }}>
-                  <option value="video">▶ Video</option>
-                  <option value="page">📖 Page</option>
-                  <option value="chapter">📌 Chapter</option>
-                  <option value="custom">📍 Custom</option>
-                </select>
-                <input
-                  value={positionValue}
-                  onChange={e => setPositionValue(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleSyncPosition()}
-                  placeholder={POSITION_HINTS[positionType]}
-                  style={{ flex: 1, minWidth: '120px', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '14px' }}
-                />
-                <button onClick={handleSyncPosition}
-                  style={{ padding: '8px 18px', background: '#111', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-                  🔁 Sync to All
-                </button>
+          {/* ── Bookmark Panel ── */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+            {/* Current Bookmark Display */}
+            <div style={{ background: '#1a1a2e', color: '#fff', borderRadius: '12px', padding: '18px 20px' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '6px' }}>
+                <span style={{ fontSize: '11px', letterSpacing: '2px', color: '#7c83fd', fontWeight: 'bold' }}>BOOKMARK</span>
+                <span style={{ fontSize: '38px', fontWeight: 'bold', lineHeight: 1 }}>#{currentBookmark}</span>
               </div>
-              {currentPosition && (
-                <p style={{ margin: '8px 0 0 0', fontSize: '12px', color: '#555' }}>
-                  Last synced: <strong>{currentPosition.label}</strong>
+              {currentPosition ? (
+                <>
+                  <p style={{ margin: '0', fontSize: '20px', fontWeight: '600' }}>{currentPosition.label}</p>
+                  {!isHost && <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#aaa' }}>Open your content and navigate to this position.</p>}
+                </>
+              ) : (
+                <p style={{ margin: 0, fontSize: '14px', color: '#888' }}>
+                  {isHost ? 'Set the first Bookmark below to begin.' : 'Waiting for host to set the first Bookmark...'}
                 </p>
               )}
             </div>
-          ) : (
-            /* Student: current sync position display */
-            currentPosition && (
-              <div style={{ background: '#1a1a2e', color: '#fff', padding: '14px 20px', flexShrink: 0, borderBottom: '1px solid #333' }}>
-                <p style={{ margin: '0 0 4px 0', fontSize: '11px', letterSpacing: '1px', color: '#aaa' }}>HOST SAYS — GO TO</p>
-                <p style={{ margin: 0, fontSize: '22px', fontWeight: 'bold' }}>{currentPosition.label}</p>
-                <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#aaa' }}>
-                  Open your content on this device and navigate to this position.
-                </p>
-              </div>
-            )
-          )}
 
-          {/* Q&A + file share */}
-          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
-            <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-              <p style={{ color: '#888', letterSpacing: '1px', margin: 0, fontSize: '12px' }}>SECTION</p>
-              <h1 style={{ fontSize: '60px', margin: '4px 0', fontWeight: 'bold' }}>#{currentBookmark}</h1>
-            </div>
-            <div style={{ width: '100%', maxWidth: '420px', background: '#fff', padding: '18px', borderRadius: '14px', boxShadow: '0 4px 16px rgba(0,0,0,0.06)' }}>
+            {/* HOST CONTROLS */}
+            {isHost && (
+              <>
+                {/* Next Bookmark Input */}
+                <div style={{ background: '#fff', borderRadius: '10px', padding: '14px 16px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
+                  <p style={{ margin: '0 0 10px', fontWeight: 'bold', fontSize: '13px', color: '#333' }}>
+                    {currentBookmark === 0 ? '📍 Set First Bookmark' : `📍 Set Bookmark #${currentBookmark + 1}`}
+                  </p>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <select value={nextType} onChange={e => setNextType(e.target.value as BookmarkPosition['type'])}
+                      style={{ padding: '8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px', cursor: 'pointer', flexShrink: 0 }}>
+                      <option value="video">▶ Video</option>
+                      <option value="page">📖 Page</option>
+                      <option value="chapter">📌 Chapter</option>
+                      <option value="custom">📍 Custom</option>
+                    </select>
+                    <input value={nextValue} onChange={e => setNextValue(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && (currentBookmark === 0 ? handleSetFirstBookmark() : canAdvance && handleNextBookmark())}
+                      placeholder={TYPE_HINTS[nextType]}
+                      style={{ flex: 1, padding: '8px 12px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px' }} />
+                  </div>
+                </div>
+
+                {/* Gate Status */}
+                {currentBookmark > 0 && (
+                  <div style={{ background: '#fff', borderRadius: '10px', padding: '14px 16px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
+                    <p style={{ margin: '0 0 12px', fontWeight: 'bold', fontSize: '13px', color: '#333' }}>Before Next Bookmark</p>
+
+                    {/* Step 1: Questions */}
+                    <div style={{ marginBottom: '10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '16px' }}>{unansweredCount === 0 ? '✅' : '🔴'}</span>
+                        <span style={{ fontWeight: '600', fontSize: '13px' }}>
+                          Step 1 — Answer all questions
+                        </span>
+                        {unansweredCount > 0 && (
+                          <span style={{ background: '#dc3545', color: '#fff', borderRadius: '20px', padding: '1px 8px', fontSize: '12px', fontWeight: 'bold' }}>
+                            {unansweredCount} unanswered
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Step 2: Poll */}
+                    <div style={{ marginBottom: '10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '16px' }}>{pollComplete && (pollScore ?? 0) >= 80 ? '✅' : pollComplete ? '⚠️' : '⬜'}</span>
+                        <span style={{ fontWeight: '600', fontSize: '13px' }}>Step 2 — Understanding poll ≥ 80%</span>
+                      </div>
+
+                      {!pollActive && !pollComplete && (
+                        <button onClick={handleStartPoll} disabled={!canRunPoll}
+                          style={{ padding: '7px 16px', background: canRunPoll ? '#7c83fd' : '#ccc', color: '#fff', border: 'none', borderRadius: '6px', cursor: canRunPoll ? 'pointer' : 'not-allowed', fontSize: '13px', fontWeight: 'bold' }}>
+                          🗳 Run Understanding Poll
+                        </button>
+                      )}
+
+                      {pollActive && (
+                        <div style={{ background: '#f0f0ff', borderRadius: '8px', padding: '10px 14px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '13px', fontWeight: 'bold', color: '#333' }}>
+                            Poll live — {totalResponses} response{totalResponses !== 1 ? 's' : ''}
+                          </p>
+                          <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                            <div style={{ flex: 1, background: '#d4edda', borderRadius: '6px', padding: '6px 10px', textAlign: 'center' }}>
+                              <strong style={{ color: '#155724' }}>✓ {pollResponses.yes}</strong>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#155724' }}>Got it</p>
+                            </div>
+                            <div style={{ flex: 1, background: '#f8d7da', borderRadius: '6px', padding: '6px 10px', textAlign: 'center' }}>
+                              <strong style={{ color: '#721c24' }}>✗ {pollResponses.no}</strong>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#721c24' }}>Not yet</p>
+                            </div>
+                          </div>
+                          {totalResponses > 0 && (
+                            <div style={{ background: '#e9ecef', borderRadius: '4px', height: '8px', marginBottom: '8px' }}>
+                              <div style={{ background: '#28a745', height: '100%', borderRadius: '4px', width: `${Math.round((pollResponses.yes / totalResponses) * 100)}%`, transition: 'width 0.3s' }} />
+                            </div>
+                          )}
+                          <button onClick={handleClosePoll}
+                            style={{ padding: '6px 14px', background: '#333', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>
+                            Close Poll
+                          </button>
+                        </div>
+                      )}
+
+                      {pollComplete && pollScore !== null && (
+                        <div style={{ background: (pollScore >= 80) ? '#d4edda' : '#fff3cd', borderRadius: '8px', padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <span style={{ fontSize: '22px' }}>{pollScore >= 80 ? '✅' : '⚠️'}</span>
+                          <div>
+                            <strong style={{ fontSize: '16px', color: pollScore >= 80 ? '#155724' : '#856404' }}>{pollScore}% understood</strong>
+                            <p style={{ margin: '1px 0 0', fontSize: '12px', color: '#666' }}>
+                              {totalResponses} response{totalResponses !== 1 ? 's' : ''} · {pollScore >= 80 ? 'Ready to advance!' : 'Consider re-teaching before advancing.'}
+                            </p>
+                          </div>
+                          {pollScore < 80 && (
+                            <button onClick={handleStartPoll} style={{ marginLeft: 'auto', padding: '5px 10px', background: '#7c83fd', color: '#fff', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' }}>
+                              Re-run
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Next Bookmark Button */}
+                    <button onClick={handleNextBookmark} disabled={!canAdvance}
+                      style={{ width: '100%', padding: '11px', background: canAdvance ? '#28a745' : '#ccc', color: '#fff', border: 'none', borderRadius: '8px', cursor: canAdvance ? 'pointer' : 'not-allowed', fontWeight: 'bold', fontSize: '14px', marginTop: '4px' }}>
+                      {canAdvance ? `✓ Set Bookmark #${currentBookmark + 1}` : `🔒 Next Bookmark (complete steps above)`}
+                    </button>
+                  </div>
+                )}
+
+                {/* First bookmark button */}
+                {currentBookmark === 0 && (
+                  <button onClick={handleSetFirstBookmark} disabled={!nextValue.trim()}
+                    style={{ width: '100%', padding: '12px', background: nextValue.trim() ? '#7c83fd' : '#ccc', color: '#fff', border: 'none', borderRadius: '8px', cursor: nextValue.trim() ? 'pointer' : 'not-allowed', fontWeight: 'bold', fontSize: '14px' }}>
+                    Set Bookmark #1 & Sync Students
+                  </button>
+                )}
+
+                {/* Bookmark History */}
+                {bookmarkHistory.length > 0 && (
+                  <div style={{ background: '#fff', borderRadius: '10px', padding: '12px 14px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
+                    <p style={{ margin: '0 0 8px', fontWeight: 'bold', fontSize: '12px', color: '#888' }}>BOOKMARK HISTORY</p>
+                    {bookmarkHistory.map((b, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 0', borderBottom: i < bookmarkHistory.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
+                        <span style={{ background: i === 0 ? '#7c83fd' : '#eee', color: i === 0 ? '#fff' : '#555', borderRadius: '4px', padding: '2px 7px', fontSize: '11px', fontWeight: 'bold', flexShrink: 0 }}>#{b.num}</span>
+                        <span style={{ fontSize: '13px', color: '#333' }}>{b.pos.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* STUDENT VIEW — Poll */}
+            {!isHost && pollActive && (
+              <div style={{ background: '#7c83fd', borderRadius: '12px', padding: '20px', color: '#fff', textAlign: 'center' }}>
+                <p style={{ margin: '0 0 4px', fontSize: '11px', letterSpacing: '2px', opacity: 0.8 }}>UNDERSTANDING CHECK</p>
+                <p style={{ margin: '0 0 16px', fontSize: '18px', fontWeight: 'bold' }}>Do you understand this section?</p>
+                {studentPollAnswer === null ? (
+                  <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+                    <button onClick={() => handlePollResponse(true)}
+                      style={{ flex: 1, maxWidth: '160px', padding: '12px', background: '#28a745', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '15px', fontWeight: 'bold' }}>
+                      ✓ Yes, I got it!
+                    </button>
+                    <button onClick={() => handlePollResponse(false)}
+                      style={{ flex: 1, maxWidth: '160px', padding: '12px', background: '#dc3545', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '15px', fontWeight: 'bold' }}>
+                      ✗ Not quite yet
+                    </button>
+                  </div>
+                ) : (
+                  <p style={{ fontSize: '16px', margin: 0 }}>
+                    {studentPollAnswer ? '✓ Response sent — you said Got it!' : '✓ Response sent — you said Not yet'}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Q&A Input */}
+            <div style={{ background: '#fff', borderRadius: '10px', padding: '14px 16px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
+              <p style={{ margin: '0 0 8px', fontWeight: 'bold', fontSize: '13px', color: '#333' }}>
+                💬 Ask a Question <span style={{ fontWeight: 'normal', color: '#888', fontSize: '12px' }}>(linked to Bookmark #{currentBookmark})</span>
+              </p>
               <textarea value={questionInput} onChange={e => setQuestionInput(e.target.value)}
-                placeholder="Ask a question..."
-                style={{ width: '100%', height: '65px', padding: '10px', borderRadius: '8px', border: '1px solid #ddd', marginBottom: '10px', resize: 'none', boxSizing: 'border-box' }} />
+                placeholder="Type your question here..."
+                style={{ width: '100%', height: '60px', padding: '8px', borderRadius: '6px', border: '1px solid #ddd', resize: 'none', boxSizing: 'border-box', fontSize: '13px', marginBottom: '8px' }} />
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button onClick={handleSendQuestion}
-                  style={{ flex: 1, padding: '11px', background: '#ff9800', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
+                  style={{ flex: 1, padding: '9px', background: '#ff9800', color: '#fff', border: 'none', borderRadius: '7px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>
                   ❓ Ask
                 </button>
                 <button onClick={handleShareFile}
-                  style={{ flex: 1, padding: '11px', background: '#007bff', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
+                  style={{ flex: 1, padding: '9px', background: '#007bff', color: '#fff', border: 'none', borderRadius: '7px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>
                   📤 Share Link
                 </button>
               </div>
             </div>
+
           </div>
         </div>
 
-        {/* Sidebar */}
-        <div style={{ flex: 1, background: '#fff', borderLeft: '1px solid #eee', display: 'flex', flexDirection: 'column', minWidth: '240px' }}>
-          <div style={{ padding: '14px 16px', borderBottom: '1px solid #eee' }}>
-            <h3 style={{ margin: 0 }}>Class Stream</h3>
+        {/* ── Right: Questions Sidebar ── */}
+        <div style={{ width: '300px', flexShrink: 0, background: '#fff', borderLeft: '1px solid #eee', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee' }}>
+            <h3 style={{ margin: 0, fontSize: '14px' }}>❓ Questions</h3>
           </div>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '14px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
 
-            {/* Sync history (host only) */}
-            {isHost && syncHistory.length > 0 && (
+            {/* Current bookmark's questions */}
+            {currentBmQs.length > 0 && (
               <>
-                <h4 style={{ fontSize: '13px', color: '#555', marginTop: 0 }}>🕐 Sync History</h4>
-                {syncHistory.map((p, i) => (
-                  <div key={i} style={{ padding: '6px 10px', background: i === 0 ? '#e8f5e9' : '#f5f5f5', borderRadius: '6px', marginBottom: '6px', fontSize: '12px', cursor: 'pointer', borderLeft: `3px solid ${i === 0 ? '#28a745' : '#ccc'}` }}
-                    onClick={() => { sendSignal('position-sync', { position: p }); setCurrentPosition(p); }}>
-                    {p.label}
-                    {i === 0 && <span style={{ marginLeft: '6px', color: '#28a745', fontSize: '10px' }}>● current</span>}
+                <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 'bold', color: '#7c83fd', letterSpacing: '1px' }}>
+                  BOOKMARK #{currentBookmark} · {unansweredCount} unanswered
+                </p>
+                {currentBmQs.map((q, i) => (
+                  <div key={i} style={{ padding: '10px', background: q.answered ? '#f0f9f0' : '#fff8e1', borderRadius: '8px', marginBottom: '8px', borderLeft: `3px solid ${q.answered ? '#28a745' : '#ff9800'}` }}>
+                    <p style={{ margin: '0 0 2px', fontSize: '11px', fontWeight: 'bold', color: '#666' }}>{q.user_name}</p>
+                    <p style={{ margin: '0 0 6px', fontSize: '13px' }}>{q.question_text}</p>
+                    {isHost && !q.answered && (
+                      <button onClick={() => q.id && handleAnswerQuestion(q.id)}
+                        style={{ padding: '3px 8px', background: '#28a745', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>
+                        Mark Answered
+                      </button>
+                    )}
+                    {q.answered && <span style={{ color: '#28a745', fontSize: '11px' }}>✓ Answered</span>}
                   </div>
                 ))}
-                <hr style={{ margin: '12px 0', border: 'none', borderTop: '1px solid #eee' }} />
               </>
             )}
 
-            <h4 style={{ fontSize: '13px', color: '#555', marginTop: 0 }}>❓ Questions ({questions.length})</h4>
-            {questions.length === 0 ? (
-              <p style={{ color: '#999', fontSize: '13px' }}>No questions yet</p>
-            ) : (
-              questions.map((q, i) => (
-                <div key={i} style={{ padding: '10px', background: '#fff3cd', borderRadius: '8px', marginBottom: '8px', borderLeft: '4px solid #ff9800' }}>
-                  <small><strong>{q.user_name}</strong></small>
-                  <p style={{ margin: '4px 0', fontSize: '13px' }}>{q.question_text}</p>
-                  {isHost && !q.answered && (
-                    <button onClick={() => q.id && handleAnswerQuestion(q.id)}
-                      style={{ padding: '3px 8px', background: '#4caf50', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '11px' }}>
-                      Mark Answered
-                    </button>
-                  )}
-                  {q.answered && <span style={{ color: '#4caf50', fontSize: '11px' }}>✓ Answered</span>}
-                </div>
-              ))
+            {currentBmQs.length === 0 && (
+              <p style={{ color: '#bbb', fontSize: '13px', textAlign: 'center', margin: '20px 0' }}>No questions for Bookmark #{currentBookmark} yet</p>
             )}
 
-            <h4 style={{ marginTop: '16px', fontSize: '13px', color: '#555' }}>📁 Shared Links ({sharedFiles.length})</h4>
-            {sharedFiles.length === 0 ? (
-              <p style={{ color: '#999', fontSize: '13px' }}>No links shared</p>
-            ) : (
-              sharedFiles.map((f, i) => (
-                <div key={i} style={{ padding: '8px', background: '#e7f3ff', borderRadius: '8px', marginBottom: '8px' }}>
-                  <a href={f.file_url} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#0056b3', fontWeight: '500', fontSize: '13px' }}>📄 {f.file_name}</a>
-                  <br /><small style={{ color: '#888' }}>By {f.from_name}</small>
-                </div>
-              ))
+            {/* Shared Files */}
+            {sharedFiles.length > 0 && (
+              <>
+                <p style={{ margin: '16px 0 6px', fontSize: '11px', fontWeight: 'bold', color: '#007bff', letterSpacing: '1px' }}>SHARED LINKS</p>
+                {sharedFiles.map((f, i) => (
+                  <div key={i} style={{ padding: '8px', background: '#e8f4ff', borderRadius: '8px', marginBottom: '6px' }}>
+                    <a href={f.file_url} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#0056b3', fontWeight: '500', fontSize: '13px' }}>📄 {f.file_name}</a>
+                    <br /><small style={{ color: '#888' }}>By {f.from_name}</small>
+                  </div>
+                ))}
+              </>
             )}
+
+            {/* Past questions (collapsed) */}
+            {pastQs.length > 0 && (
+              <>
+                <p style={{ margin: '16px 0 6px', fontSize: '11px', fontWeight: 'bold', color: '#aaa', letterSpacing: '1px' }}>EARLIER QUESTIONS ({pastQs.length})</p>
+                {pastQs.map((q, i) => (
+                  <div key={i} style={{ padding: '8px', background: '#f9f9f9', borderRadius: '6px', marginBottom: '5px', borderLeft: '2px solid #ccc', opacity: 0.7 }}>
+                    <p style={{ margin: '0 0 2px', fontSize: '10px', color: '#888' }}>BM#{q.bookmark_number} · {q.user_name}</p>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#555' }}>{q.question_text}</p>
+                  </div>
+                ))}
+              </>
+            )}
+
           </div>
         </div>
+
       </div>
     </div>
   );
