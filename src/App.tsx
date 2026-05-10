@@ -46,7 +46,7 @@ const STEM_SUBJECTS = ['physics', 'chemistry', 'biology', 'maths', 'geometry', '
 const Q_TYPE_LABELS: Record<string, string> = { mc: 'Multiple Choice', short: 'Short Answer', long: 'Long Answer', diagram: 'Diagram + Label', derive: 'Derive / Prove' };
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
-const makeId = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
+const makeId = () => crypto.randomUUID();
 const blankQ = (id: number, stem: boolean): QuizQuestion => ({ id, type: 'mc', text: '', options: ['', '', '', ''], correctOption: 'A', requiresDiagram: stem });
 
 // ─── Formula Parser ──────────────────────────────────────────────────────────
@@ -188,8 +188,10 @@ export default function App() {
   const [generatedCode, setGeneratedCode] = useState('');
 
   const [myId] = useState(() => {
-    let id = localStorage.getItem('eds_session_id');
-    if (!id) { id = makeId(); localStorage.setItem('eds_session_id', id); }
+    const stored = localStorage.getItem('eds_session_id');
+    const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
+    const id = stored && isUuid(stored) ? stored : crypto.randomUUID();
+    localStorage.setItem('eds_session_id', id);
     return id;
   });
 
