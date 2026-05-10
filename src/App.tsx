@@ -172,9 +172,22 @@ export default function App() {
 
   const handleJoinLounge = async () => {
     try {
-      if (inputCode.trim() !== currentLounge?.entry_code.toString()) {
-        return alert('Invalid entry code!');
+      if (!guestName.trim()) return alert('Please enter your name.');
+
+      let lounge = currentLounge;
+
+      if (!lounge || lounge.entry_code.toString() !== inputCode.trim()) {
+        const { data, error } = await supabase
+          .from('active_lounges')
+          .select('*')
+          .eq('entry_code', inputCode.trim())
+          .single();
+
+        if (error || !data) return alert('Invalid entry code!');
+        lounge = data;
       }
+
+      setCurrentLounge(lounge);
       setView('room');
       setShowJoinModal(false);
     } catch (error) {
