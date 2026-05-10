@@ -1,0 +1,144 @@
+-- Create tables
+CREATE TABLE IF NOT EXISTS active_lounges (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  lounge_name text NOT NULL,
+  host_name text NOT NULL,
+  host_id text NOT NULL,
+  entry_code text NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS class_sessions (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  lounge_id uuid REFERENCES active_lounges(id) ON DELETE CASCADE,
+  status text DEFAULT 'not_started',
+  current_bookmark int DEFAULT 0,
+  started_at timestamptz,
+  last_updated timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS questions (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  lounge_id uuid REFERENCES active_lounges(id) ON DELETE CASCADE,
+  user_name text NOT NULL,
+  question_text text NOT NULL,
+  bookmark_number int DEFAULT 0,
+  answered boolean DEFAULT false,
+  peer_id text,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bookmarks (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  lounge_id uuid REFERENCES active_lounges(id) ON DELETE CASCADE,
+  bookmark_number int NOT NULL,
+  timestamp bigint,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS file_shares (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  lounge_id uuid REFERENCES active_lounges(id) ON DELETE CASCADE,
+  from_peer_id text,
+  from_name text,
+  to_peer_id text,
+  file_name text NOT NULL,
+  file_url text NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
+
+-- Enable Row Level Security
+ALTER TABLE active_lounges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE class_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE questions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bookmarks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE file_shares ENABLE ROW LEVEL SECURITY;
+
+-- Allow full public access (anon key) to all tables
+CREATE POLICY "Allow public select" ON active_lounges FOR SELECT USING (true);
+CREATE POLICY "Allow public insert" ON active_lounges FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public update" ON active_lounges FOR UPDATE USING (true);
+CREATE POLICY "Allow public delete" ON active_lounges FOR DELETE USING (true);
+
+CREATE POLICY "Allow public select" ON class_sessions FOR SELECT USING (true);
+CREATE POLICY "Allow public insert" ON class_sessions FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public update" ON class_sessions FOR UPDATE USING (true);
+
+CREATE POLICY "Allow public select" ON questions FOR SELECT USING (true);
+CREATE POLICY "Allow public insert" ON questions FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public update" ON questions FOR UPDATE USING (true);
+
+CREATE POLICY "Allow public select" ON bookmarks FOR SELECT USING (true);
+CREATE POLICY "Allow public insert" ON bookmarks FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Allow public select" ON file_shares FOR SELECT USING (true);
+CREATE POLICY "Allow public insert" ON file_shares FOR INSERT WITH CHECK (true);
+create table if not exists quizzes (
+  id uuid default gen_random_uuid() primary key,
+  lounge_id uuid, type text not null, title text not null,
+  subject text default 'general', questions jsonb not null,
+  time_limit integer, bookmark_ref integer, created_at timestamptz default now()
+);
+create table if not exists quiz_submissions (
+  id uuid default gen_random_uuid() primary key,
+  quiz_id uuid, student_name text not null, peer_id text,
+  answers jsonb not null, submitted_at timestamptz default now()
+);
+alter table quizzes enable row level security;
+alter table quiz_submissions enable row level security;
+create policy "open_quizzes" on quizzes for all using (true) with check (true);
+create policy "open_quiz_submissions" on quiz_submissions for all using (true) with check (true);
+-- New tables only (safe to run)
+create table if not exists quizzes (
+  id uuid default gen_random_uuid() primary key,
+  lounge_id uuid,
+  type text not null,
+  title text not null,
+  subject text default 'general',
+  questions jsonb not null,
+  time_limit integer,
+  bookmark_ref integer,
+  created_at timestamptz default now()
+);
+
+create table if not exists quiz_submissions (
+  id uuid default gen_random_uuid() primary key,
+  quiz_id uuid,
+  student_name text not null,
+  peer_id text,
+  answers jsonb not null,
+  submitted_at timestamptz default now()
+);
+
+alter table quizzes enable row level security;
+alter table quiz_submissions enable row level security;
+
+do $$ begin
+  create policy "open_quizzes" on quizzes for all using (true) with check (true);
+exception when duplicate_object then null;
+end $$;
+
+do $$ begin
+  create policy "open_quiz_submissions" on quiz_submissions for all using (true) with check (true);
+exception when duplicate_object then null;
+end $$;
+create table if not exists quizzes (
+  id uuid default gen_random_uuid() primary key,
+  lounge_id uuid,
+  type text not null,
+  title text not null,
+  subject text default 'general',
+  questions jsonb not null,
+  time_limit integer,
+  bookmark_ref integer,
+  created_at timestamptz default now()
+);
+
+create table if not exists quiz_submissions (
+  id uuid default gen_random_uuid() primary key,
+  quiz_id uuid,
+  student_name text not null,
+  peer_id text,
+  answers jsonb not null,
+  submitted_at timestamptz default now()
+);
