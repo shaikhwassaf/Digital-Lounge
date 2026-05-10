@@ -2,60 +2,41 @@ import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabaseClient';
 
 export default function App() {
-  const [lounges, setLounges] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'lobby' | 'room'>('lobby');
+  const [isHost, setIsHost] = useState(false);
   const [currentLounge, setCurrentLounge] = useState<any>(null);
+  
+  // SESSION & SYNC STATES
+  const [syncPosition, setSyncPosition] = useState('00:00'); 
+  const [sessionStatus, setSessionStatus] = useState('active');
+  const [questions, setQuestions] = useState<any[]>([]);
+  const [pollActive, setPollActive] = useState(false);
+  const [pollResults, setPollResults] = useState({ yes: 0, total: 0 });
 
-  // SECURITY & FORM STATES
-  const [showHostModal, setShowHostModal] = useState(false);
-  const [showJoinModal, setShowJoinModal] = useState(false);
-  const [newLoungeName, setNewLoungeName] = useState('');
-  const [newHostName, setNewHostName] = useState('');
-  const [guestName, setGuestName] = useState('');
-  const [inputCode, setInputCode] = useState(''); 
-  const [generatedCode, setGeneratedCode] = useState('');
+  // FILE SHARING STATES
+  const [files, setFiles] = useState<any[]>([]);
+  const [participants, setParticipants] = useState<any[]>([]);
 
-  // SYNC STATE
-  const [localTimestamp, setLocalTimestamp] = useState(0);
-
-  // IDENTIFICATION: Persistent ID for this specific device/browser session
-  const [mySessionId] = useState(() => {
-    const saved = localStorage.getItem('lounge_session_id');
-    if (saved) return saved;
-    const newId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
-    localStorage.setItem('lounge_session_id', newId);
-    return newId;
+  const [myId] = useState(() => {
+    const id = localStorage.getItem('user_uuid') || crypto.randomUUID();
+    localStorage.setItem('user_uuid', id);
+    return id;
   });
 
-  const fetchLoungeData = async () => {
-    setLoading(true);
-    const { data } = await supabase.from('active_lounges').select('*');
-    if (data) {
-      const withCounts = await Promise.all(data.map(async (l) => {
-        const { count } = await supabase.from('participants').select('*', { count: 'exact', head: true }).eq('lounge_id', l.id);
-        return { ...l, participantCount: count || 0 };
-      }));
-      setLounges(withCounts);
-    }
-    setLoading(false);
-  };
-
-  useEffect(() => { fetchLoungeData(); }, []);
-
-  // REAL-TIME SYNC
+  // REAL-TIME ENGINE
   useEffect(() => {
     if (view === 'room' && currentLounge) {
-      const channel = supabase
-        .channel(`lounge-${currentLounge.id}`)
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'active_lounges', filter: `id=eq.${currentLounge.id}` }, 
-        (payload) => {
-          if (payload.new.last_timestamp !== undefined) {
-            setLocalTimestamp(payload.new.last_timestamp);
+      const channel = supabase.channel(`room-${currentLounge.id}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'active_lounges', filter: `id=eq.${currentLounge.id}` }, 
+          (p) => {
+            setSyncPosition(p.new.last_timestamp);
+            setPollActive(p.new.poll_active);
+            setSessionStatus(p.new.session_status);
+          })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'participants' }, () => fetchRoomData())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'shared_files' }, (p) => {
+          if (!p.new.recipient_id || p.new.recipient_id === myId || isHost) {
+            setFiles(prev => [...prev, p.new]);
           }
         })
         .subscribe();
@@ -63,126 +44,96 @@ export default function App() {
     }
   }, [view, currentLounge]);
 
-  // HOST: Create Lounge (Enforcing 1 Lounge Rule)
-  const handleCreate = async () => {
-    if (!newLoungeName || !newHostName) return alert("Missing fields");
-
-    // 1. CLEAR PREVIOUS HOSTING SESSIONS: Remove any lounge previously hosted by this device
-    await supabase.from('active_lounges').delete().eq('host_id', mySessionId);
-    
-    const uniqueCode = Math.floor(100000 + Math.random() * 900000).toString();
-
-    const { data, error } = await supabase.from('active_lounges').insert([{
-      lounge_name: newLoungeName,
-      host_name: newHostName,
-      host_id: mySessionId, // Using the unique device session ID
-      entry_code: uniqueCode,
-      last_timestamp: 0
-    }]).select();
-
-    if (!error && data) {
-      setGeneratedCode(uniqueCode);
-      setCurrentLounge(data[0]);
-      setShowHostModal(false);
-      setView('room');
-    } else {
-      alert("Error: " + error?.message);
+  const fetchRoomData = async () => {
+    const { data: qData } = await supabase.from('participants').select('*').eq('lounge_id', currentLounge.id);
+    if (qData) {
+      setQuestions(qData.filter(p => p.question_text));
+      setParticipants(qData);
+      const responses = qData.filter(p => p.poll_response);
+      setPollResults({ yes: responses.filter(r => r.poll_response === 'YES').length, total: responses.length });
     }
   };
 
-  // GUEST: Verify Entry (Enforcing 1 Participation Rule)
-  const handleJoinVerify = async () => {
-    if (inputCode.trim() === currentLounge.entry_code.toString().trim()) {
-      
-      // 1. CLEAR PREVIOUS PARTICIPATIONS: Remove this device from any other lounge's participant list
-      await supabase.from('participants').delete().eq('peer_id', mySessionId);
+  // --- TEACHER ACTIONS ---
+  const score = pollResults.total > 0 ? Math.round((pollResults.yes / pollResults.total) * 100) : 0;
 
-      const { error } = await supabase.from('participants').insert([{
+  const affixBookMark = async () => {
+    if (questions.length > 0) return alert(`Answer all questions first!`);
+    if (pollActive && score <= 80) return alert(`Understanding is only ${score}%. Need >80% to move.`);
+
+    const time = prompt("Enter Time Stamp for this Book Mark (e.g. 05:45):");
+    if (time) {
+      await supabase.from('participants').update({ question_text: null, poll_response: null }).eq('lounge_id', currentLounge.id);
+      await supabase.from('active_lounges').update({ last_timestamp: time, poll_active: false }).eq('id', currentLounge.id);
+    }
+  };
+
+  const handleFileShare = async (recipientId: string | null) => {
+    const url = prompt("Enter File URL:");
+    const name = prompt("Enter File Name:");
+    if (url && name) {
+      await supabase.from('shared_files').insert([{
         lounge_id: currentLounge.id,
-        user_name: guestName || 'Guest',
-        peer_id: mySessionId // Using device ID to track this specific participant
+        sender_id: myId,
+        recipient_id: recipientId,
+        file_url: url,
+        file_name: name
       }]);
-
-      if (!error) {
-        setShowJoinModal(false);
-        setView('room');
-      } else {
-        alert("Join Error: " + error.message);
-      }
-    } else {
-      alert("Invalid Entry Code!");
     }
   };
 
-  // EXIT LOGIC
-  const handleExit = async () => {
-    // Clean up database records on exit
-    await supabase.from('active_lounges').delete().eq('host_id', mySessionId);
-    await supabase.from('participants').delete().eq('peer_id', mySessionId);
-    
-    setView('lobby');
-    fetchLoungeData();
-  };
+  if (sessionStatus === 'break') return <div style={{textAlign:'center', padding:'100px'}}><h1>SESSION ON BREAK</h1>{isHost && <button onClick={() => supabase.from('active_lounges').update({session_status:'active'}).eq('id', currentLounge.id)}>Resume</button>}</div>;
+  if (sessionStatus === 'ended') return <div style={{textAlign:'center', padding:'100px'}}><h1>CLASS ENDED</h1><button onClick={() => setView('lobby')}>Return to Lobby</button></div>;
 
-  if (view === 'lobby') {
-    return (
-      <div style={{ padding: '20px', maxWidth: '600px', margin: '0 auto', fontFamily: 'sans-serif' }}>
-        <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h1>Lounge Hub</h1>
-          <button onClick={() => setShowHostModal(true)} style={{ background: '#000', color: '#fff', padding: '10px 15px', borderRadius: '8px' }}>+ Host</button>
-        </header>
-
-        <div style={{ marginTop: '20px' }}>
-          {lounges.map(l => (
-            <div key={l.id} style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '10px', marginBottom: '10px' }}>
-              <h3>{l.lounge_name} 🔒</h3>
-              <button onClick={() => { setCurrentLounge(l); setShowJoinModal(true); }}>Join Session</button>
-            </div>
-          ))}
-        </div>
-
-        {showHostModal && (
-          <div style={{ position: 'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.8)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-            <div style={{ background: '#fff', padding: '30px', borderRadius: '12px', width: '300px' }}>
-              <h2>Host Lounge</h2>
-              <p style={{ fontSize: '12px', color: 'red' }}>Note: Starting a new lounge will close any lounge you are currently hosting.</p>
-              <input placeholder="Topic" value={newLoungeName} onChange={e => setNewLoungeName(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px', boxSizing: 'border-box' }} />
-              <input placeholder="Your Name" value={newHostName} onChange={e => setNewHostName(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '20px', boxSizing: 'border-box' }} />
-              <button onClick={handleCreate} style={{ width: '100%', padding: '12px', background: '#28a745', color: '#fff', border: 'none', borderRadius: '8px' }}>Start Session</button>
-              <button onClick={() => setShowHostModal(false)} style={{ width: '100%', marginTop: '10px', border: 'none', background: 'none' }}>Cancel</button>
-            </div>
+  return (
+    <div style={{ display: 'flex', height: '100vh', fontFamily: 'sans-serif', overflow: 'hidden' }}>
+      {/* MAIN SYNC PANEL */}
+      <div style={{ flex: 2, background: '#f8f9fa', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+        <p>BOOK MARK</p>
+        <h1 style={{ fontSize: '120px', margin: '20px 0' }}>{syncPosition}</h1>
+        
+        {isHost && (
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button onClick={() => supabase.from('active_lounges').update({poll_active: true}).eq('id', currentLounge.id)}>Run Poll</button>
+            <button onClick={affixBookMark} style={{background: (score > 80 || !pollActive) ? 'green' : 'grey', color: 'white'}}>Next Book Mark</button>
+            <button onClick={() => supabase.from('active_lounges').update({session_status:'break'}).eq('id', currentLounge.id)}>Break</button>
+            <button onClick={() => supabase.from('active_lounges').update({session_status:'ended'}).eq('id', currentLounge.id)}>End Class</button>
           </div>
         )}
 
-        {showJoinModal && (
-          <div style={{ position: 'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.8)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-            <div style={{ background: '#fff', padding: '30px', borderRadius: '12px', width: '300px' }}>
-              <h2>Access Code Required</h2>
-              <input placeholder="Your Name" value={guestName} onChange={e => setGuestName(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px', boxSizing: 'border-box' }} />
-              <input placeholder="6-Digit Code" value={inputCode} onChange={e => setInputCode(e.target.value)} style={{ width: '100%', padding: '12px', marginBottom: '20px', textAlign: 'center', fontSize: '20px' }} />
-              <button onClick={handleJoinVerify} style={{ width: '100%', padding: '12px', background: '#007bff', color: '#fff', border: 'none', borderRadius: '8px' }}>Verify</button>
-              <button onClick={() => setShowJoinModal(false)} style={{ width: '100%', marginTop: '10px', border: 'none', background: 'none' }}>Cancel</button>
-            </div>
+        {!isHost && pollActive && (
+          <div style={{padding:'20px', background:'white', borderRadius:'10px', boxShadow:'0 4px 10px rgba(0,0,0,0.1)'}}>
+            <h3>Understand?</h3>
+            <button onClick={() => supabase.from('participants').update({poll_response:'YES'}).eq('peer_id', myId)}>Yes</button>
+            <button onClick={() => supabase.from('participants').update({poll_response:'NO'}).eq('peer_id', myId)}>No</button>
           </div>
         )}
       </div>
-    );
-  }
 
-  return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', textAlign: 'center', background: '#f4f4f4' }}>
-      <header style={{ padding: '15px', background: '#000', color: '#fff', display: 'flex', justifyContent: 'space-between' }}>
-        <strong>{currentLounge?.lounge_name} | Code: {generatedCode || currentLounge?.entry_code}</strong>
-        <button onClick={handleExit} style={{ background: 'red', color: '#fff', border: 'none', padding: '5px 15px' }}>Exit</button>
-      </header>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-        <p>Sync Position:</p>
-        <h1 style={{ fontSize: '120px', margin: '20px 0' }}>{localTimestamp}</h1>
-        <button onClick={() => {
-          const newTime = localTimestamp + 1;
-          setLocalTimestamp(newTime);
-          supabase.from('active_lounges').update({ last_timestamp: newTime }).eq('id', currentLounge.id).then();
-        }} style={{ padding: '15px 30px', fontSize: '18px', background: '#000', color: '#fff', borderRadius: '10px' }}>Next Step</button>
+      {/* INTERACTION PANEL */}
+      <div style={{ flex: 1, borderLeft: '1px solid #ddd', padding: '20px', display:'flex', flexDirection:'column' }}>
+        <h3>Questions ({questions.length}) | Score: {score}%</h3>
+        <div style={{flex: 1, overflowY:'auto'}}>
+           {questions.map((q, i) => (
+             <div key={i} style={{padding:'10px', background:'#eee', margin:'5px 0'}}>
+               {q.question_text}
+               {isHost && <button onClick={() => supabase.from('participants').update({question_text: null}).eq('id', q.id)}>Resolved</button>}
+             </div>
+           ))}
+        </div>
+
+        <h3>Resources</h3>
+        <div style={{flex: 1, overflowY:'auto'}}>
+          {files.map((f, i) => (
+            <div key={i}><a href={f.file_url} target="_blank">{f.file_name}</a></div>
+          ))}
+        </div>
+
+        <div style={{display:'flex', gap:'5px', marginTop:'10px'}}>
+           {!isHost && <button onClick={() => handleFileShare(currentLounge.host_id)}>Share with Teacher</button>}
+           {isHost && <button onClick={() => handleFileShare(null)}>Share with All</button>}
+           {!isHost && <input placeholder="Ask question..." onKeyDown={e => e.key === 'Enter' && supabase.from('participants').update({question_text: e.currentTarget.value}).eq('peer_id', myId)} />}
+        </div>
       </div>
     </div>
   );
