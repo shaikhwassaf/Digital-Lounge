@@ -1,7 +1,10 @@
-
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL=https://ovxpklprabwmfvaovwhu.supabase.co;
-const supabaseAnonKey = import.meta.env.eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im92eHBrbHByYWJ3bWZ2YW92d2h1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgzNDUzMjgsImV4cCI6MjA5MzkyMTMyOH0.g_ISAd2x3zEkbDA916eRy8V3MNEV9yyl8WmxsHvyA6M;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error('Missing Supabase credentials. Check .env.local file.');
+}
+
+export const supabase = createClient(supabaseUrl || '', supabaseAnonKey || '');
