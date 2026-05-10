@@ -347,14 +347,32 @@ export default function App() {
     }
   };
 
+  const handleDeleteLounge = async (loungeId: string) => {
+    try {
+      const { error } = await supabase.from('active_lounges').delete().eq('id', loungeId);
+      if (error) throw error;
+      await fetchLounges();
+    } catch (error) {
+      alert('Error ending lounge: ' + (error as any)?.message);
+    }
+  };
+
   const handleExit = async () => {
     try {
+      if (isHost && currentLounge) {
+        const endIt = window.confirm('Do you want to end this lounge? This removes it from Active Sessions so students can\'t see it anymore. Click Cancel to just leave without ending it.');
+        if (endIt) {
+          await supabase.from('active_lounges').delete().eq('id', currentLounge.id);
+        }
+      }
       setView('lobby');
       setCurrentLounge(null);
       setIsHost(false);
+      setGeneratedCode('');
       setQuestions([]);
       setSharedFiles([]);
       setCurrentBookmark(0);
+      setSessionStatus('not_started');
       await fetchLounges();
     } catch (error) {
       console.error('Error exiting:', error);
@@ -388,14 +406,40 @@ export default function App() {
           ) : (
             lounges.map((lounge: any) => (
               <div key={lounge.id} style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '8px', marginBottom: '10px', textAlign: 'left' }}>
-                <h4>{lounge.lounge_name}</h4>
-                <p>Host: {lounge.host_name}</p>
-                <button 
-                  onClick={() => { setCurrentLounge(lounge); setInputCode(''); setShowJoinModal(true); }}
-                  style={{ padding: '8px 15px', background: '#007bff', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}
-                >
-                  Join
-                </button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <h4 style={{ margin: '0 0 4px 0' }}>{lounge.lounge_name}</h4>
+                    <p style={{ margin: '0 0 10px 0', color: '#555' }}>Host: {lounge.host_name}</p>
+                  </div>
+                  {lounge.host_id === myId && (
+                    <span style={{ background: '#28a745', color: '#fff', fontSize: '11px', padding: '3px 8px', borderRadius: '4px', fontWeight: 'bold' }}>YOUR LOUNGE</span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {lounge.host_id === myId ? (
+                    <>
+                      <button
+                        onClick={() => { setCurrentLounge(lounge); setGeneratedCode(lounge.entry_code); setIsHost(true); setView('room'); }}
+                        style={{ padding: '8px 15px', background: '#28a745', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}
+                      >
+                        Rejoin as Host
+                      </button>
+                      <button
+                        onClick={() => { if (window.confirm('End this lounge? Students will no longer see it.')) handleDeleteLounge(lounge.id); }}
+                        style={{ padding: '8px 15px', background: '#dc3545', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}
+                      >
+                        End
+                      </button>
+                    </>
+                  ) : (
+                    <button 
+                      onClick={() => { setCurrentLounge(lounge); setInputCode(''); setShowJoinModal(true); }}
+                      style={{ padding: '8px 15px', background: '#007bff', color: '#fff', borderRadius: '5px', cursor: 'pointer', border: 'none' }}
+                    >
+                      Join
+                    </button>
+                  )}
+                </div>
               </div>
             ))
           )}
