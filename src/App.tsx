@@ -30,7 +30,7 @@ const C = {
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 interface Question { id?: string; user_name: string; question_text: string; bookmark_number: number; answered: boolean; peer_id?: string; }
 interface FileShare { file_name: string; file_url: string; from_name: string; }
-interface BookmarkPosition { type: 'video' | 'page' | 'chapter' | 'custom'; value: string; label: string; }
+interface BookmarkPosition { type: 'video' | 'page' | 'chapter' | 'custom'; value: string; label: string; youtubeUrl?: string; youtubeSeconds?: number; }
 interface QuizQuestion { id: number; type: 'mc' | 'short' | 'long' | 'diagram' | 'derive'; text: string; options: [string, string, string, string]; correctOption: 'A' | 'B' | 'C' | 'D'; requiresDiagram: boolean; }
 interface Quiz { id: string; type: 'short' | 'long'; title: string; subject: string; questions: QuizQuestion[]; timeLimit: number; bookmarkRef: number; createdAt: string; }
 interface QuizSubmission { studentName: string; peerId: string; answers: Record<number, string>; diagramUrls: Record<number, string>; submittedAt: string; mcScore?: number; }
@@ -95,17 +95,64 @@ const card = (extra?: React.CSSProperties): React.CSSProperties => ({ background
 const hBtn = (bg: string, color = '#fff'): React.CSSProperties => ({ background: bg, color, border: 'none', padding: '5px 11px', borderRadius: '7px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' as const });
 const pill = (bg: string, color: string): React.CSSProperties => ({ background: bg, color, borderRadius: '20px', padding: '2px 9px', fontSize: '11px', fontWeight: '700' });
 
-// ─── YouTube / content embed helper ──────────────────────────────────────────
+// ─── YouTube helpers ──────────────────────────────────────────────────────────
+function extractYouTubeId(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('youtu.be')) return u.pathname.slice(1).split('?')[0];
+    if (u.hostname.includes('youtube.com')) return u.searchParams.get('v') || '';
+  } catch {}
+  return '';
+}
+function extractYouTubeStart(url: string): number {
+  try {
+    const u = new URL(url);
+    const t = u.searchParams.get('t') || '';
+    const m = t.match(/^(\d+h)?(\d+m)?(\d+s?)?$/);
+    if (m) {
+      const h = parseInt(m[1] || '0') || 0;
+      const min = parseInt(m[2] || '0') || 0;
+      const s = parseInt((m[3] || '0').replace('s','')) || 0;
+      return h * 3600 + min * 60 + s;
+    }
+    return parseInt(t) || 0;
+  } catch {}
+  return 0;
+}
+function secondsToTimestamp(s: number): string {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+  return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}` : `${m}:${String(sec).padStart(2,'0')}`;
+}
+function isYouTubeUrl(url: string): boolean { return url.includes('youtube.com') || url.includes('youtu.be'); }
+
 function toEmbedUrl(url: string): string {
   try {
     const u = new URL(url);
     if (u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be')) {
-      const id = u.searchParams.get('v') || u.pathname.split('/').pop() || '';
+      const id = extractYouTubeId(url);
       return `https://www.youtube.com/embed/${id}?autoplay=0`;
     }
     if (u.hostname.includes('docs.google.com')) return url.replace('/edit', '/preview').replace('/pub', '/preview');
   } catch {}
   return url;
+}
+
+// ─── YouTube IFrame API loader (singleton) ────────────────────────────────────
+let ytApiReady = false;
+let ytApiCallbacks: (() => void)[] = [];
+function loadYouTubeApi(cb: () => void) {
+  if (ytApiReady) { cb(); return; }
+  ytApiCallbacks.push(cb);
+  if (document.getElementById('yt-api-script')) return;
+  const s = document.createElement('script');
+  s.id = 'yt-api-script';
+  s.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(s);
+  (window as any).onYouTubeIframeAPIReady = () => {
+    ytApiReady = true;
+    ytApiCallbacks.forEach(fn => fn());
+    ytApiCallbacks = [];
+  };
 }
 
 // ─── Responsive Hook ─────────────────────────────────────────────────────────
@@ -148,6 +195,20 @@ export default function App() {
   const [showContentInput, setShowContentInput] = useState(false);
   const [contentInput, setContentInput] = useState('');
   const studentAudioRefs = useRef<Map<string, HTMLAudioElement>>(new Map());
+
+  // YouTube sync
+  const [ytVideoId, setYtVideoId] = useState<string | null>(null);
+  const [ytPlayerReady, setYtPlayerReady] = useState(false);
+  const [ytPlaying, setYtPlaying] = useState(false);
+  const [ytCurrentTime, setYtCurrentTime] = useState(0);
+  const hostYtPlayer = useRef<any>(null);
+  const studentYtPlayer = useRef<any>(null);
+  const ytHostDivId = 'yt-host-player';
+  const ytStudentDivId = 'yt-student-player';
+  const ytThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Bookmark YouTube attachment
+  const [nextYoutubeUrl, setNextYoutubeUrl] = useState('');
 
   // Poll
   const [pollActive, setPollActive] = useState(false);
@@ -293,6 +354,78 @@ export default function App() {
     if (saved && !guestName) setGuestName(saved);
   }, []);
 
+  // ─── YouTube sync — host player ───────────────────────────────────────────
+  useEffect(() => {
+    if (!ytVideoId || !isHost) return;
+    loadYouTubeApi(() => {
+      if (hostYtPlayer.current) {
+        hostYtPlayer.current.loadVideoById({ videoId: ytVideoId, startSeconds: ytCurrentTime });
+        return;
+      }
+      hostYtPlayer.current = new (window as any).YT.Player(ytHostDivId, {
+        height: '100%', width: '100%',
+        videoId: ytVideoId,
+        playerVars: { start: Math.floor(ytCurrentTime), rel: 0, modestbranding: 1, enablejsapi: 1 },
+        events: {
+          onReady: () => setYtPlayerReady(true),
+          onStateChange: (e: any) => {
+            const YT = (window as any).YT.PlayerState;
+            const playing = e.data === YT.PLAYING;
+            const paused = e.data === YT.PAUSED;
+            if (!playing && !paused) return;
+            const ct = hostYtPlayer.current?.getCurrentTime() ?? 0;
+            setYtPlaying(playing);
+            setYtCurrentTime(ct);
+            sendSignal('yt-sync', { playing, currentTime: ct });
+          },
+        },
+      });
+    });
+  }, [ytVideoId, isHost]);
+
+  // throttled seek broadcast when host scrubs
+  useEffect(() => {
+    if (!isHost || !ytPlayerReady) return;
+    const id = setInterval(() => {
+      const p = hostYtPlayer.current;
+      if (!p) return;
+      const ct = p.getCurrentTime() ?? 0;
+      const state = p.getPlayerState();
+      const playing = state === 1;
+      setYtCurrentTime(ct);
+      if (ytThrottleRef.current) return;
+      ytThrottleRef.current = setTimeout(() => { ytThrottleRef.current = null; }, 2000);
+      sendSignal('yt-sync', { playing, currentTime: ct });
+    }, 2000);
+    return () => clearInterval(id);
+  }, [isHost, ytPlayerReady]);
+
+  // ─── YouTube sync — student player ───────────────────────────────────────
+  useEffect(() => {
+    if (!ytVideoId || isHost) return;
+    loadYouTubeApi(() => {
+      if (studentYtPlayer.current) {
+        studentYtPlayer.current.loadVideoById({ videoId: ytVideoId, startSeconds: ytCurrentTime });
+        return;
+      }
+      studentYtPlayer.current = new (window as any).YT.Player(ytStudentDivId, {
+        height: '100%', width: '100%',
+        videoId: ytVideoId,
+        playerVars: { start: Math.floor(ytCurrentTime), rel: 0, modestbranding: 1, enablejsapi: 1, controls: 0, disablekb: 1 },
+        events: { onReady: () => setYtPlayerReady(true) },
+      });
+    });
+  }, [ytVideoId, isHost]);
+
+  // clear player refs on room leave
+  useEffect(() => {
+    if (view !== 'room') {
+      hostYtPlayer.current?.destroy(); hostYtPlayer.current = null;
+      studentYtPlayer.current?.destroy(); studentYtPlayer.current = null;
+      setYtVideoId(null); setYtPlayerReady(false); setYtPlaying(false);
+    }
+  }, [view]);
+
   // ─── WebRTC / Room ───────────────────────────────────────────────────────
   const sendSignal = (event: string, payload: any) => signalingChannel.current?.send({ type: 'broadcast', event, payload });
 
@@ -421,6 +554,27 @@ export default function App() {
     sc.on('broadcast', { event: 'session-status' }, ({ payload }: any) => { if (isHostRef.current) return; setSessionStatus(payload.status); });
     sc.on('broadcast', { event: 'content-share' }, ({ payload }: any) => { if (isHostRef.current) return; setContentUrl(payload.url); });
     sc.on('broadcast', { event: 'content-clear' }, () => { if (isHostRef.current) return; setContentUrl(null); });
+    sc.on('broadcast', { event: 'yt-load' }, ({ payload }: any) => {
+      if (isHostRef.current) return;
+      setYtVideoId(payload.videoId);
+      setYtPlaying(false);
+      setYtCurrentTime(payload.startSeconds ?? 0);
+    });
+    sc.on('broadcast', { event: 'yt-sync' }, ({ payload }: any) => {
+      if (isHostRef.current) return;
+      const p = studentYtPlayer.current;
+      if (!p) return;
+      if (Math.abs(p.getCurrentTime() - payload.currentTime) > 1.5) p.seekTo(payload.currentTime, true);
+      if (payload.playing && p.getPlayerState() !== 1) p.playVideo();
+      if (!payload.playing && p.getPlayerState() === 1) p.pauseVideo();
+      setYtPlaying(payload.playing);
+    });
+    sc.on('broadcast', { event: 'yt-seek' }, ({ payload }: any) => {
+      if (isHostRef.current) return;
+      studentYtPlayer.current?.seekTo(payload.seconds, true);
+      setYtCurrentTime(payload.seconds);
+    });
+    sc.on('broadcast', { event: 'yt-clear' }, () => { if (isHostRef.current) return; setYtVideoId(null); setYtPlaying(false); });
     await sc.subscribe();
     signalingChannel.current = sc;
 
@@ -456,6 +610,8 @@ export default function App() {
     setExitResponses([]); setShowExitSummary(false); setShowExitTicket(false);
     setShowProgress(false); setShowReminder(false);
     setContentUrl(null); setShowContentInput(false);
+    setYtVideoId(null); setYtPlayerReady(false); setYtPlaying(false); setYtCurrentTime(0);
+    setNextYoutubeUrl('');
   };
 
   const toggleMic = () => { localStream.current?.getAudioTracks().forEach(t => { t.enabled = !t.enabled; }); setMicActive(p => !p); };
@@ -465,12 +621,24 @@ export default function App() {
   // ─── Bookmark / Poll ─────────────────────────────────────────────────────
   const advanceBookmark = async () => {
     const nextNum = currentBookmark + 1;
-    const pos: BookmarkPosition = { type: nextType, value: nextValue.trim(), label: `${TYPE_ICONS[nextType]} ${TYPE_LABELS[nextType]}: ${nextValue.trim()}` };
+    const ytUrl = nextYoutubeUrl.trim();
+    const ytId = ytUrl ? extractYouTubeId(ytUrl) : null;
+    const ytStart = ytUrl ? extractYouTubeStart(ytUrl) : 0;
+    const valueLabel = nextValue.trim() || (ytUrl ? secondsToTimestamp(ytStart) : '');
+    const pos: BookmarkPosition = {
+      type: nextType,
+      value: valueLabel,
+      label: `${TYPE_ICONS[nextType]} ${TYPE_LABELS[nextType]}${valueLabel ? ': ' + valueLabel : ''}`,
+      youtubeUrl: ytUrl || undefined,
+      youtubeSeconds: ytId ? ytStart : undefined,
+    };
     try { await supabase.from('bookmarks').insert([{ lounge_id: currentClass.id, bookmark_number: nextNum, timestamp: Date.now(), created_at: new Date().toISOString() }]); } catch {}
     sendSignal('bookmark-sync', { bookmark: nextNum, position: pos });
+    if (ytId) sendSignal('yt-load', { videoId: ytId, startSeconds: ytStart });
     setCurrentBookmark(nextNum); setCurrentPosition(pos);
     setBookmarkHistory(prev => [{ num: nextNum, pos }, ...prev]);
-    setNextValue('');
+    setNextValue(''); setNextYoutubeUrl('');
+    if (ytId) { setYtVideoId(ytId); setYtCurrentTime(ytStart); setYtPlaying(false); }
     setPollActive(false); setPollComplete(false); setPollScore(null); setPollResponses({ yes: 0, no: 0 }); setPollResponseDetails([]);
   };
 
@@ -859,8 +1027,36 @@ export default function App() {
           {/* Scrollable */}
           <div style={{ flex: isMobile ? 'none' : 1, overflowY: isMobile ? 'visible' : 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
 
-            {/* Shared content panel */}
-            {contentUrl && (
+            {/* ── Synchronized YouTube Player ── */}
+            {ytVideoId && (
+              <div style={{ borderRadius: '12px', overflow: 'hidden', border: `2px solid #dc2626`, background: '#000', boxShadow: '0 4px 20px rgba(220,38,38,0.22)' }}>
+                <div style={{ background: '#dc2626', color: '#fff', padding: '6px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: '700' }}>▶ YouTube — Synchronized</span>
+                    {isHost && <span style={{ ...pill('#fff', '#dc2626') }}>{ytPlaying ? '▶ Playing' : '⏸ Paused'} · {secondsToTimestamp(Math.floor(ytCurrentTime))}</span>}
+                    {!isHost && <span style={{ ...pill('rgba(255,255,255,0.2)', '#fff') }}>🔒 Controlled by teacher</span>}
+                  </div>
+                  {isHost && (
+                    <div style={{ display: 'flex', gap: '5px' }}>
+                      <button onClick={() => { const p = hostYtPlayer.current; if (!p) return; const ct = p.getCurrentTime(); p.seekTo(Math.max(0, ct - 10), true); sendSignal('yt-seek', { seconds: Math.max(0, ct - 10) }); }} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '5px', padding: '2px 7px', cursor: 'pointer', fontSize: '11px' }}>−10s</button>
+                      <button onClick={() => { const p = hostYtPlayer.current; if (!p) return; const ct = p.getCurrentTime(); p.seekTo(ct + 10, true); sendSignal('yt-seek', { seconds: ct + 10 }); }} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '5px', padding: '2px 7px', cursor: 'pointer', fontSize: '11px' }}>+10s</button>
+                      <button onClick={() => { setYtVideoId(null); hostYtPlayer.current?.destroy(); hostYtPlayer.current = null; setYtPlayerReady(false); sendSignal('yt-clear', {}); }} style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '5px', padding: '2px 8px', cursor: 'pointer', fontSize: '11px', fontWeight: '600' }}>✕ Stop</button>
+                    </div>
+                  )}
+                </div>
+                <div style={{ position: 'relative', width: '100%', paddingBottom: isMobile ? '56.25%' : '45%', background: '#000' }}>
+                  <div id={isHost ? ytHostDivId : ytStudentDivId} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
+                  {/* student overlay prevents manual interaction */}
+                  {!isHost && <div style={{ position: 'absolute', inset: 0, zIndex: 1, cursor: 'default' }} />}
+                </div>
+                {!isHost && !ytPlayerReady && (
+                  <div style={{ textAlign: 'center', padding: '10px', color: '#fff', fontSize: '12px', opacity: 0.7 }}>Loading player…</div>
+                )}
+              </div>
+            )}
+
+            {/* Shared content panel (non-YouTube) */}
+            {contentUrl && !ytVideoId && (
               <div style={{ borderRadius: '12px', overflow: 'hidden', border: `2px solid #0e7490`, background: '#fff', boxShadow: '0 4px 18px rgba(14,116,144,0.18)' }}>
                 <div style={{ background: '#0e7490', color: '#fff', padding: '6px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span style={{ fontSize: '12px', fontWeight: '700' }}>🖥 Shared Content</span>
@@ -876,7 +1072,7 @@ export default function App() {
                 />
               </div>
             )}
-            {isHost && !contentUrl && (
+            {isHost && !contentUrl && !ytVideoId && (
               <div onClick={() => setShowContentInput(true)} style={{ ...card(), border: `1.5px dashed #0e7490`, cursor: 'pointer', textAlign: 'center', padding: '12px', color: '#0e7490' }}>
                 <span style={{ fontSize: '20px' }}>🖥</span>
                 <p style={{ margin: '4px 0 0', fontSize: '13px', fontWeight: '600' }}>Share YouTube, Google Docs, or any website with students</p>
@@ -898,19 +1094,36 @@ export default function App() {
             {isHost && <>
               <div style={card()}>
                 <p style={{ margin: '0 0 8px', fontWeight: '700', fontSize: '13px', color: C.text }}>{currentBookmark === 0 ? '📍 Set First Bookmark' : `📍 Set Bookmark #${currentBookmark + 1}`}</p>
-                <div style={{ display: 'flex', gap: '7px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '7px', alignItems: 'center', marginBottom: '7px' }}>
                   <select value={nextType} onChange={e => setNextType(e.target.value as BookmarkPosition['type'])} style={{ padding: '8px', borderRadius: '7px', border: `1.5px solid ${C.border}`, fontSize: '13px', cursor: 'pointer', flexShrink: 0, background: '#f8fbff' }}>
                     <option value="video">▶ Video</option><option value="page">📖 Page</option><option value="chapter">📌 Chapter</option><option value="custom">📍 Custom</option>
                   </select>
                   <input value={nextValue} onChange={e => setNextValue(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && (currentBookmark === 0 ? nextValue.trim() && advanceBookmark() : canAdvance && advanceBookmark())}
+                    onKeyDown={e => e.key === 'Enter' && (currentBookmark === 0 ? (nextValue.trim() || nextYoutubeUrl.trim()) && advanceBookmark() : canAdvance && advanceBookmark())}
                     placeholder={TYPE_HINTS[nextType]} style={{ flex: 1, padding: '8px 11px', borderRadius: '7px', border: `1.5px solid ${C.border}`, fontSize: '13px', background: '#f8fbff' }} />
                 </div>
+                <div style={{ display: 'flex', gap: '7px', alignItems: 'center' }}>
+                  <span style={{ fontSize: '18px', flexShrink: 0 }}>▶</span>
+                  <input
+                    value={nextYoutubeUrl}
+                    onChange={e => setNextYoutubeUrl(e.target.value)}
+                    placeholder="YouTube URL (optional) — syncs all students to this timestamp"
+                    style={{ flex: 1, padding: '8px 11px', borderRadius: '7px', border: `1.5px solid ${nextYoutubeUrl && !extractYouTubeId(nextYoutubeUrl) ? C.red : (nextYoutubeUrl ? '#16a34a' : C.border)}`, fontSize: '12px', background: '#f8fbff', color: C.text }}
+                  />
+                  {nextYoutubeUrl && extractYouTubeId(nextYoutubeUrl) && (
+                    <span style={{ ...pill('#dcfce7', '#15803d'), flexShrink: 0 }}>✓ YouTube</span>
+                  )}
+                </div>
+                {nextYoutubeUrl && extractYouTubeId(nextYoutubeUrl) && (
+                  <p style={{ margin: '5px 0 0', fontSize: '11px', color: '#15803d' }}>
+                    Starts at {secondsToTimestamp(extractYouTubeStart(nextYoutubeUrl))} · Students will see a synchronized player — teacher controls play/pause/seek
+                  </p>
+                )}
               </div>
 
               {currentBookmark === 0
-                ? <button onClick={() => nextValue.trim() && advanceBookmark()} disabled={!nextValue.trim()}
-                    style={{ width: '100%', padding: '11px', background: nextValue.trim() ? C.primary : '#cbd5e1', color: '#fff', border: 'none', borderRadius: '9px', cursor: nextValue.trim() ? 'pointer' : 'not-allowed', fontWeight: '700', fontSize: '14px' }}>
+                ? <button onClick={() => (nextValue.trim() || nextYoutubeUrl.trim()) && advanceBookmark()} disabled={!nextValue.trim() && !nextYoutubeUrl.trim()}
+                    style={{ width: '100%', padding: '11px', background: (nextValue.trim() || nextYoutubeUrl.trim()) ? C.primary : '#cbd5e1', color: '#fff', border: 'none', borderRadius: '9px', cursor: (nextValue.trim() || nextYoutubeUrl.trim()) ? 'pointer' : 'not-allowed', fontWeight: '700', fontSize: '14px' }}>
                     Set Bookmark #1 & Sync Students →
                   </button>
                 : <div style={card()}>
@@ -962,9 +1175,14 @@ export default function App() {
                 <div style={card()}>
                   <p style={{ margin: '0 0 8px', fontWeight: '700', fontSize: '11px', color: C.muted, letterSpacing: '1.5px', textTransform: 'uppercase' }}>Session History</p>
                   {bookmarkHistory.map((b, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 0', borderBottom: i < bookmarkHistory.length - 1 ? `1px solid ${C.border}` : 'none' }}>
-                      <span style={{ ...pill(i === 0 ? C.primary : C.bg, i === 0 ? '#fff' : C.muted), fontSize: '11px', border: i !== 0 ? `1px solid ${C.border}` : 'none' }}>#{b.num}</span>
-                      <span style={{ fontSize: '12px', color: C.text }}>{b.pos.label}</span>
+                    <div key={i} style={{ padding: '5px 0', borderBottom: i < bookmarkHistory.length - 1 ? `1px solid ${C.border}` : 'none' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ ...pill(i === 0 ? C.primary : C.bg, i === 0 ? '#fff' : C.muted), fontSize: '11px', border: i !== 0 ? `1px solid ${C.border}` : 'none', flexShrink: 0 }}>#{b.num}</span>
+                        <span style={{ fontSize: '12px', color: C.text }}>{b.pos.label}</span>
+                        {b.pos.youtubeUrl && (
+                          <a href={b.pos.youtubeUrl} target="_blank" rel="noreferrer" style={{ ...pill('#fee2e2', '#dc2626'), fontSize: '10px', textDecoration: 'none', flexShrink: 0 }}>▶ YT</a>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
