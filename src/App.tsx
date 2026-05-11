@@ -95,6 +95,19 @@ const card = (extra?: React.CSSProperties): React.CSSProperties => ({ background
 const hBtn = (bg: string, color = '#fff'): React.CSSProperties => ({ background: bg, color, border: 'none', padding: '5px 11px', borderRadius: '7px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' as const });
 const pill = (bg: string, color: string): React.CSSProperties => ({ background: bg, color, borderRadius: '20px', padding: '2px 9px', fontSize: '11px', fontWeight: '700' });
 
+// ─── YouTube / content embed helper ──────────────────────────────────────────
+function toEmbedUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be')) {
+      const id = u.searchParams.get('v') || u.pathname.split('/').pop() || '';
+      return `https://www.youtube.com/embed/${id}?autoplay=0`;
+    }
+    if (u.hostname.includes('docs.google.com')) return url.replace('/edit', '/preview').replace('/pub', '/preview');
+  } catch {}
+  return url;
+}
+
 // ─── Responsive Hook ─────────────────────────────────────────────────────────
 function useWindowWidth() {
   const [w, setW] = useState(() => typeof window !== 'undefined' ? window.innerWidth : 1280);
@@ -131,6 +144,10 @@ export default function App() {
   const [questionInput, setQuestionInput] = useState('');
   const [sharedFiles, setSharedFiles] = useState<FileShare[]>([]);
   const [sessionStatus, setSessionStatus] = useState<'not_started' | 'active' | 'on_break' | 'ended'>('not_started');
+  const [contentUrl, setContentUrl] = useState<string | null>(null);
+  const [showContentInput, setShowContentInput] = useState(false);
+  const [contentInput, setContentInput] = useState('');
+  const studentAudioRefs = useRef<Map<string, HTMLAudioElement>>(new Map());
 
   // Poll
   const [pollActive, setPollActive] = useState(false);
@@ -260,6 +277,22 @@ export default function App() {
 
   useEffect(() => { if (view === 'room' && currentClass) { setupRoom(); return () => cleanupRoom(); } }, [view, currentClass]);
 
+  useEffect(() => {
+    if (view !== 'room') return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [view]);
+
+  useEffect(() => {
+    if (!isHost && guestName) localStorage.setItem('eds_guest_name', guestName);
+  }, [guestName, isHost]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('eds_guest_name');
+    if (saved && !guestName) setGuestName(saved);
+  }, []);
+
   // ─── WebRTC / Room ───────────────────────────────────────────────────────
   const sendSignal = (event: string, payload: any) => signalingChannel.current?.send({ type: 'broadcast', event, payload });
 
@@ -268,6 +301,17 @@ export default function App() {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.current.set(studentId, pc);
     localStream.current?.getTracks().forEach(t => pc.addTrack(t, localStream.current!));
+    pc.ontrack = (e) => {
+      const stream = e.streams?.[0];
+      if (!stream) return;
+      let audio = studentAudioRefs.current.get(studentId);
+      if (!audio) {
+        audio = new Audio();
+        audio.autoplay = true;
+        studentAudioRefs.current.set(studentId, audio);
+      }
+      audio.srcObject = stream;
+    };
     pc.onicecandidate = (e) => { if (e.candidate) sendSignal('ice-candidate', { from: myId, target: studentId, candidate: e.candidate.toJSON() }); };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') {
@@ -277,6 +321,8 @@ export default function App() {
         if (leaderboardRef.current.length > 0) sendSignal('leaderboard-update', { entries: leaderboardRef.current });
       } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
         setConnectedStudents(prev => prev.filter(id => id !== studentId));
+        const audio = studentAudioRefs.current.get(studentId);
+        if (audio) { audio.srcObject = null; studentAudioRefs.current.delete(studentId); }
       }
     };
     const offer = await pc.createOffer();
@@ -305,7 +351,12 @@ export default function App() {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'questions' }, (p) => {
         setQuestions(prev => prev.some(q => q.id === p.new.id) ? prev : [p.new as Question, ...prev]);
         if (isHostRef.current && p.new.peer_id && p.new.user_name) awardPoints(p.new.peer_id, p.new.user_name, 3);
-      }).subscribe();
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'file_shares', filter: `lounge_id=eq.${currentClass.id}` }, (p) => {
+        const f: FileShare = { file_name: p.new.file_name, file_url: p.new.file_url, from_name: p.new.from_name };
+        setSharedFiles(prev => prev.some(x => x.file_url === f.file_url && x.from_name === f.from_name) ? prev : [f, ...prev]);
+      })
+      .subscribe();
     dbChannel.current = dbc;
 
     const sc = supabase.channel(`signals-${currentClass.id}`, { config: { broadcast: { self: false } } });
@@ -367,6 +418,9 @@ export default function App() {
     });
     sc.on('broadcast', { event: 'exit-ticket-end' }, () => { if (isHostRef.current) return; setShowExitTicket(false); });
     sc.on('broadcast', { event: 'leaderboard-update' }, ({ payload }: any) => { if (isHostRef.current) return; setLeaderboard(payload.entries); });
+    sc.on('broadcast', { event: 'session-status' }, ({ payload }: any) => { if (isHostRef.current) return; setSessionStatus(payload.status); });
+    sc.on('broadcast', { event: 'content-share' }, ({ payload }: any) => { if (isHostRef.current) return; setContentUrl(payload.url); });
+    sc.on('broadcast', { event: 'content-clear' }, () => { if (isHostRef.current) return; setContentUrl(null); });
     await sc.subscribe();
     signalingChannel.current = sc;
 
@@ -389,6 +443,7 @@ export default function App() {
   const cleanupRoom = () => {
     localStream.current?.getTracks().forEach(t => t.stop()); localStream.current = null;
     peerConnections.current.forEach(pc => pc.close()); peerConnections.current.clear();
+    studentAudioRefs.current.forEach(a => { a.srcObject = null; }); studentAudioRefs.current.clear();
     if (dbChannel.current) { supabase.removeChannel(dbChannel.current); dbChannel.current = null; }
     if (signalingChannel.current) { supabase.removeChannel(signalingChannel.current); signalingChannel.current = null; }
     setHostStream(null); setConnectedStudents([]); setMicActive(false); setCamActive(false);
@@ -400,6 +455,7 @@ export default function App() {
     setLeaderboard([]); setShowLeaderboard(false);
     setExitResponses([]); setShowExitSummary(false); setShowExitTicket(false);
     setShowProgress(false); setShowReminder(false);
+    setContentUrl(null); setShowContentInput(false);
   };
 
   const toggleMic = () => { localStream.current?.getAudioTracks().forEach(t => { t.enabled = !t.enabled; }); setMicActive(p => !p); };
@@ -542,11 +598,19 @@ export default function App() {
     try {
       await supabase.from('class_sessions').insert([{ lounge_id: currentClass.id, status: 'active', current_bookmark: 0, started_at: new Date().toISOString(), last_updated: new Date().toISOString() }]);
       setSessionStatus('active');
+      sendSignal('session-status', { status: 'active' });
     } catch (e) { alert('Error: ' + (e as any)?.message); }
   };
 
-  const handleBreak = async () => { try { await supabase.from('class_sessions').update({ status: 'on_break', last_updated: new Date().toISOString() }).eq('lounge_id', currentClass.id); setSessionStatus('on_break'); } catch {} };
-  const handleResume = async () => { try { await supabase.from('class_sessions').update({ status: 'active', last_updated: new Date().toISOString() }).eq('lounge_id', currentClass.id); setSessionStatus('active'); } catch {} };
+  const handleShareContent = (url: string) => {
+    const embedUrl = toEmbedUrl(url);
+    setContentUrl(embedUrl);
+    sendSignal('content-share', { url: embedUrl });
+  };
+  const handleClearContent = () => { setContentUrl(null); sendSignal('content-clear', {}); };
+
+  const handleBreak = async () => { try { await supabase.from('class_sessions').update({ status: 'on_break', last_updated: new Date().toISOString() }).eq('lounge_id', currentClass.id); setSessionStatus('on_break'); sendSignal('session-status', { status: 'on_break' }); } catch {} };
+  const handleResume = async () => { try { await supabase.from('class_sessions').update({ status: 'active', last_updated: new Date().toISOString() }).eq('lounge_id', currentClass.id); setSessionStatus('active'); sendSignal('session-status', { status: 'active' }); } catch {} };
   const handleDeleteClass = async (id: string) => { try { await supabase.from('active_lounges').delete().eq('id', id); await fetchClasses(); } catch {} };
 
   const handleExit = async () => {
@@ -712,11 +776,29 @@ export default function App() {
             {sessionStatus === 'not_started' && <button onClick={handleStartSession} style={hBtn(C.emerald)}>▶ Start Session</button>}
             {sessionStatus === 'active' && <button onClick={handleBreak} style={hBtn('rgba(255,255,255,0.18)')}>☕ Break</button>}
             {sessionStatus === 'on_break' && <button onClick={handleResume} style={hBtn('rgba(255,255,255,0.18)')}>▶ Resume</button>}
+            <button onClick={() => setShowContentInput(true)} style={hBtn('#0e7490')}>🖥 Share Screen</button>
           </>}
           <button onClick={() => setShowLeaderboard(true)} style={hBtn('#92400e')}>🏆 {leaderboard.length > 0 ? leaderboard[0].points : 0}pt</button>
           <button onClick={handleExit} style={hBtn(C.red)}>Exit</button>
         </div>
       </header>
+
+      {/* Session status banner — students only */}
+      {!isHost && sessionStatus === 'on_break' && (
+        <div style={{ background: '#92400e', color: '#fff', padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', flexShrink: 0, fontSize: '13px', fontWeight: '600' }}>
+          ☕ <span>The class is on a break — your teacher will resume shortly.</span>
+        </div>
+      )}
+      {!isHost && sessionStatus === 'active' && (
+        <div style={{ background: C.emerald, color: '#fff', padding: '5px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', flexShrink: 0, fontSize: '12px', fontWeight: '600' }}>
+          🟢 Session in progress
+        </div>
+      )}
+      {!isHost && sessionStatus === 'not_started' && (
+        <div style={{ background: C.headerBg, color: 'rgba(255,255,255,0.7)', padding: '5px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', flexShrink: 0, fontSize: '12px' }}>
+          ⏳ Waiting for host to start the session…
+        </div>
+      )}
 
       {/* 35-min banner */}
       {isHost && showRefreshReminder && (
@@ -776,6 +858,30 @@ export default function App() {
 
           {/* Scrollable */}
           <div style={{ flex: isMobile ? 'none' : 1, overflowY: isMobile ? 'visible' : 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+
+            {/* Shared content panel */}
+            {contentUrl && (
+              <div style={{ borderRadius: '12px', overflow: 'hidden', border: `2px solid #0e7490`, background: '#fff', boxShadow: '0 4px 18px rgba(14,116,144,0.18)' }}>
+                <div style={{ background: '#0e7490', color: '#fff', padding: '6px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px', fontWeight: '700' }}>🖥 Shared Content</span>
+                  {isHost && <button onClick={handleClearContent} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '5px', padding: '2px 8px', cursor: 'pointer', fontSize: '11px', fontWeight: '600' }}>✕ Stop Sharing</button>}
+                </div>
+                <iframe
+                  src={contentUrl}
+                  title="Shared Content"
+                  style={{ width: '100%', height: isMobile ? '220px' : '340px', border: 'none', display: 'block' }}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                  sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-presentation"
+                />
+              </div>
+            )}
+            {isHost && !contentUrl && (
+              <div onClick={() => setShowContentInput(true)} style={{ ...card(), border: `1.5px dashed #0e7490`, cursor: 'pointer', textAlign: 'center', padding: '12px', color: '#0e7490' }}>
+                <span style={{ fontSize: '20px' }}>🖥</span>
+                <p style={{ margin: '4px 0 0', fontSize: '13px', fontWeight: '600' }}>Share YouTube, Google Docs, or any website with students</p>
+              </div>
+            )}
 
             {/* Bookmark card */}
             <div style={{ background: `linear-gradient(135deg, ${C.headerBg} 0%, ${C.primary} 100%)`, borderRadius: '14px', padding: '16px 18px', boxShadow: `0 4px 18px rgba(37,99,235,0.22)` }}>
@@ -977,6 +1083,38 @@ export default function App() {
       )}
 
       {/* ═══ MODALS ═══ */}
+
+      {showContentInput && isHost && (
+        <Overlay>
+          <div style={{ background: C.card, borderRadius: '16px', width: '520px', maxWidth: '96vw', padding: '24px', margin: 'auto', boxShadow: '0 20px 70px rgba(14,116,144,0.2)', border: `1px solid #0e7490` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '800', color: C.text }}>🖥 Share Content with Students</h2>
+              <button onClick={() => setShowContentInput(false)} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '6px 10px', cursor: 'pointer', color: C.muted, fontSize: '16px' }}>✕</button>
+            </div>
+            <div style={{ background: '#f0fdfa', borderRadius: '9px', padding: '10px 14px', marginBottom: '16px', fontSize: '12px', color: '#0e7490', border: '1px solid #99f6e4' }}>
+              <strong>Supported:</strong> YouTube videos (auto-converted to embed), Google Docs/Slides, Google Drive previews, any website that allows embedding.
+              <br /><strong>Not supported:</strong> Netflix, Spotify, and sites that block embedding — students will get a "Open in tab" link instead.
+            </div>
+            <label style={lblStyle}>URL to share</label>
+            <input
+              value={contentInput}
+              onChange={e => setContentInput(e.target.value)}
+              placeholder="https://youtube.com/watch?v=... or https://docs.google.com/..."
+              style={{ ...iStyle, marginBottom: '16px' }}
+              onKeyDown={e => { if (e.key === 'Enter' && contentInput.trim()) { handleShareContent(contentInput.trim()); setContentInput(''); setShowContentInput(false); } }}
+            />
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                onClick={() => { if (contentInput.trim()) { handleShareContent(contentInput.trim()); setContentInput(''); setShowContentInput(false); } }}
+                disabled={!contentInput.trim()}
+                style={{ flex: 1, padding: '12px', background: contentInput.trim() ? '#0e7490' : '#e2e8f0', color: contentInput.trim() ? '#fff' : C.muted, border: 'none', borderRadius: '10px', cursor: contentInput.trim() ? 'pointer' : 'not-allowed', fontWeight: '700', fontSize: '14px' }}>
+                🖥 Share with Class
+              </button>
+              <button onClick={() => setShowContentInput(false)} style={{ padding: '12px 20px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', cursor: 'pointer', fontSize: '13px', color: C.text, fontWeight: '600' }}>Cancel</button>
+            </div>
+          </div>
+        </Overlay>
+      )}
 
       {showQuizCreator && (
         <Overlay>
