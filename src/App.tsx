@@ -850,18 +850,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Feature bar */}
-        <div style={{ background: C.featureBar, padding: '10px 8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: isMobile ? '18px' : '40px', flexWrap: 'wrap' }}>
-            {[['🔴 Live', 'Real-time P2P'], ['📲 WhatsApp', 'No App Install'], ['🧠 Gated', '80% Poll Gate'], ['🏆 Gamified', 'Live Leaderboard']].map(([icon, label]) => (
-              <div key={label} style={{ color: '#fff', textAlign: 'center' }}>
-                <p style={{ margin: 0, fontSize: isMobile ? '12px' : '13px', fontWeight: '700' }}>{icon}</p>
-                <p style={{ margin: 0, fontSize: '10px', opacity: 0.8 }}>{label}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
         {/* Active Classes */}
         <div style={{ maxWidth: '660px', margin: '32px auto', padding: '0 16px' }}>
           <h3 style={{ color: C.text, marginBottom: '14px', fontWeight: '700', fontSize: '16px' }}>Active Classes</h3>
@@ -979,10 +967,10 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: isMobile ? 'column' : 'row', overflow: isMobile ? 'auto' : 'hidden', paddingBottom: isMobile ? '56px' : 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: isMobile ? 'column' : 'row', overflow: 'hidden', minHeight: 0 }}>
 
         {/* Left — hidden on mobile when Questions tab active */}
-        <div style={{ flex: isMobile ? 'none' : 2, display: isMobile && mobileTab === 'questions' ? 'none' : 'flex', flexDirection: 'column', overflow: isMobile ? 'visible' : 'hidden', minWidth: 0 }}>
+        <div style={{ flex: 2, display: isMobile && mobileTab === 'questions' ? 'none' : 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
 
           {/* AV Strip */}
           <div style={{ background: C.avBg, padding: '8px 12px', display: 'flex', gap: '12px', alignItems: 'center', flexShrink: 0, borderBottom: `1px solid rgba(191,219,254,0.15)` }}>
@@ -1008,24 +996,43 @@ export default function App() {
                 </div>
               </>
             ) : (
-              <>
-                <div style={{ position: 'relative', flexShrink: 0 }}>
-                  <video ref={hostVideoRef} autoPlay playsInline style={{ width: isMobile ? '120px' : '170px', height: isMobile ? '75px' : '100px', borderRadius: '8px', background: '#1e3a8a', objectFit: 'cover', display: hostStream ? 'block' : 'none', border: '2px solid #0891b2' }} />
-                  {!hostStream && <div style={{ width: isMobile ? '120px' : '170px', height: isMobile ? '75px' : '100px', borderRadius: '8px', background: '#1e3a8a', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '5px', border: '2px solid rgba(8,145,178,0.4)' }}><span style={{ fontSize: '22px' }}>📡</span><span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '11px' }}>{connectionStatus}</span></div>}
-                  <span style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '9px', padding: '1px 4px', borderRadius: '3px', fontWeight: '600' }}>{currentClass?.host_name}</span>
+              /* Student AV strip — compact on mobile */
+              isMobile ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%' }}>
+                  <div style={{ position: 'relative', flexShrink: 0 }}>
+                    <video ref={hostVideoRef} autoPlay playsInline style={{ width: '80px', height: '52px', borderRadius: '7px', background: '#1e3a8a', objectFit: 'cover', display: hostStream ? 'block' : 'none', border: '2px solid #0891b2' }} />
+                    {!hostStream && <div style={{ width: '80px', height: '52px', borderRadius: '7px', background: '#1e3a8a', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(8,145,178,0.3)' }}><span style={{ fontSize: '18px' }}>📡</span></div>}
+                    <span style={{ position: 'absolute', top: '2px', left: '2px', background: 'rgba(0,0,0,0.65)', color: '#fff', fontSize: '8px', padding: '1px 3px', borderRadius: '3px', fontWeight: '600', maxWidth: '70px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentClass?.host_name}</span>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '4px' }}>
+                      <button onClick={toggleMic} style={{ background: micActive ? C.emerald : C.red, border: 'none', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '12px', color: '#fff', fontWeight: '700', WebkitTapHighlightColor: 'transparent' as any }}>{micActive ? '🎙️' : '🔇'}</button>
+                      <span style={{ fontSize: '11px', color: connectionStatus === 'Live (P2P)' ? '#86efac' : 'rgba(255,255,255,0.5)', fontWeight: '600' }}>{connectionStatus === 'Live (P2P)' ? '✓ Live' : connectionStatus}</span>
+                    </div>
+                    {leaderboard.length > 0 && (() => { const me = leaderboard.find(e => e.peerId === myId); return me ? <span style={{ fontSize: '11px', color: '#fcd34d', fontWeight: '600' }}>🏆 {me.points} pts · #{leaderboard.findIndex(e => e.peerId === myId) + 1}</span> : null; })()}
+                    {mediaError && <span style={{ color: '#fcd34d', fontSize: '10px' }}>⚠ {mediaError}</span>}
+                  </div>
                 </div>
-                <div>
-                  <button onClick={toggleMic} style={{ background: micActive ? C.emerald : C.red, border: 'none', borderRadius: '7px', padding: '7px 14px', cursor: 'pointer', fontSize: '13px', color: '#fff', fontWeight: '700' }}>{micActive ? '🎙️ Mic On' : '🔇 Muted'}</button>
-                  <p style={{ margin: '5px 0 0', fontSize: '11px', color: connectionStatus === 'Live (P2P)' ? '#86efac' : 'rgba(255,255,255,0.4)' }}>{connectionStatus === 'Live (P2P)' ? '✓ Connected to host' : connectionStatus}</p>
-                  {leaderboard.length > 0 && (() => { const me = leaderboard.find(e => e.peerId === myId); return me ? <p style={{ margin: '3px 0 0', fontSize: '11px', color: '#fcd34d' }}>🏆 {me.points} pts · #{leaderboard.findIndex(e => e.peerId === myId) + 1}</p> : null; })()}
-                  {mediaError && <p style={{ color: '#fcd34d', margin: '4px 0 0', fontSize: '11px' }}>⚠ {mediaError}</p>}
-                </div>
-              </>
+              ) : (
+                <>
+                  <div style={{ position: 'relative', flexShrink: 0 }}>
+                    <video ref={hostVideoRef} autoPlay playsInline style={{ width: '170px', height: '100px', borderRadius: '8px', background: '#1e3a8a', objectFit: 'cover', display: hostStream ? 'block' : 'none', border: '2px solid #0891b2' }} />
+                    {!hostStream && <div style={{ width: '170px', height: '100px', borderRadius: '8px', background: '#1e3a8a', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '5px', border: '2px solid rgba(8,145,178,0.4)' }}><span style={{ fontSize: '22px' }}>📡</span><span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '11px' }}>{connectionStatus}</span></div>}
+                    <span style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '9px', padding: '1px 4px', borderRadius: '3px', fontWeight: '600' }}>{currentClass?.host_name}</span>
+                  </div>
+                  <div>
+                    <button onClick={toggleMic} style={{ background: micActive ? C.emerald : C.red, border: 'none', borderRadius: '7px', padding: '7px 14px', cursor: 'pointer', fontSize: '13px', color: '#fff', fontWeight: '700' }}>{micActive ? '🎙️ Mic On' : '🔇 Muted'}</button>
+                    <p style={{ margin: '5px 0 0', fontSize: '11px', color: connectionStatus === 'Live (P2P)' ? '#86efac' : 'rgba(255,255,255,0.4)' }}>{connectionStatus === 'Live (P2P)' ? '✓ Connected to host' : connectionStatus}</p>
+                    {leaderboard.length > 0 && (() => { const me = leaderboard.find(e => e.peerId === myId); return me ? <p style={{ margin: '3px 0 0', fontSize: '11px', color: '#fcd34d' }}>🏆 {me.points} pts · #{leaderboard.findIndex(e => e.peerId === myId) + 1}</p> : null; })()}
+                    {mediaError && <p style={{ color: '#fcd34d', margin: '4px 0 0', fontSize: '11px' }}>⚠ {mediaError}</p>}
+                  </div>
+                </>
+              )
             )}
           </div>
 
           {/* Scrollable */}
-          <div style={{ flex: isMobile ? 'none' : 1, overflowY: isMobile ? 'visible' : 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px', WebkitOverflowScrolling: 'touch' as any, paddingBottom: isMobile ? 'calc(68px + env(safe-area-inset-bottom))' : '12px' }}>
 
             {/* ── Synchronized YouTube Player ── */}
             {ytVideoId && (
@@ -1243,11 +1250,11 @@ export default function App() {
         </div>
 
         {/* Right sidebar — full-width tab on mobile */}
-        <div style={{ width: isMobile ? '100%' : '275px', flexShrink: 0, background: C.card, borderLeft: isMobile ? 'none' : `1px solid ${C.border}`, borderTop: isMobile ? `1px solid ${C.border}` : 'none', display: isMobile && mobileTab !== 'questions' ? 'none' : 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: isMobile ? '100%' : 0 }}>
+        <div style={{ width: isMobile ? '100%' : '275px', flexShrink: 0, background: C.card, borderLeft: isMobile ? 'none' : `1px solid ${C.border}`, borderTop: isMobile ? `1px solid ${C.border}` : 'none', display: isMobile && mobileTab !== 'questions' ? 'none' : 'flex', flexDirection: 'column', overflow: 'hidden', flex: isMobile ? 1 : undefined }}>
           <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.border}`, background: C.bg }}>
             <h3 style={{ margin: 0, fontSize: '13px', fontWeight: '700', color: C.text }}>❓ Questions</h3>
           </div>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '10px 11px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' as any, padding: '10px 11px', paddingBottom: isMobile ? 'calc(68px + env(safe-area-inset-bottom))' : '10px' }}>
             {currentBmQs.length > 0 && <>
               <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: '700', color: C.primary, letterSpacing: '1px', textTransform: 'uppercase' }}>Bookmark #{currentBookmark} · {unansweredCount} unanswered</p>
               {currentBmQs.map((q, i) => (
@@ -1284,15 +1291,15 @@ export default function App() {
 
       {/* ═══ Mobile Bottom Tab Bar ═══ */}
       {isMobile && (
-        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, height: '56px', background: C.headerBg, borderTop: `2px solid ${C.headerBdr}`, display: 'flex', zIndex: 200 }}>
+        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: C.headerBg, borderTop: `2px solid ${C.headerBdr}`, display: 'flex', zIndex: 200, paddingBottom: 'env(safe-area-inset-bottom)' }}>
           <button
             onClick={() => setMobileTab('main')}
-            style={{ flex: 1, background: mobileTab === 'main' ? 'rgba(255,255,255,0.18)' : 'transparent', border: 'none', color: mobileTab === 'main' ? '#fff' : 'rgba(255,255,255,0.55)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>
+            style={{ flex: 1, height: '56px', background: mobileTab === 'main' ? 'rgba(255,255,255,0.18)' : 'transparent', border: 'none', color: mobileTab === 'main' ? '#fff' : 'rgba(255,255,255,0.55)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px', WebkitTapHighlightColor: 'transparent' as any }}>
             <span style={{ fontSize: '20px', lineHeight: 1 }}>📚</span>Class
           </button>
           <button
             onClick={() => setMobileTab('questions')}
-            style={{ flex: 1, background: mobileTab === 'questions' ? 'rgba(255,255,255,0.18)' : 'transparent', border: 'none', color: mobileTab === 'questions' ? '#fff' : 'rgba(255,255,255,0.55)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px', position: 'relative' }}>
+            style={{ flex: 1, height: '56px', background: mobileTab === 'questions' ? 'rgba(255,255,255,0.18)' : 'transparent', border: 'none', color: mobileTab === 'questions' ? '#fff' : 'rgba(255,255,255,0.55)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px', position: 'relative', WebkitTapHighlightColor: 'transparent' as any }}>
             <span style={{ fontSize: '20px', lineHeight: 1 }}>❓</span>
             Questions
             {unansweredCount > 0 && <span style={{ position: 'absolute', top: '6px', right: 'calc(50% - 22px)', background: C.amber, color: '#fff', borderRadius: '10px', fontSize: '9px', fontWeight: '800', padding: '1px 5px', lineHeight: '14px' }}>{unansweredCount}</span>}
