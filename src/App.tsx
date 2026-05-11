@@ -206,6 +206,12 @@ export default function App() {
   const ytHostDivId = 'yt-host-player';
   const ytStudentDivId = 'yt-student-player';
   const ytThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Refs so signal-handler closures can read latest state
+  const ytVideoIdRef = useRef<string | null>(null);
+  const ytCurrentTimeRef = useRef<number>(0);
+  const ytPlayingRef = useRef<boolean>(false);
+  const contentUrlRef = useRef<string | null>(null);
+  const sessionStatusRef = useRef<'not_started' | 'active' | 'on_break' | 'ended'>('not_started');
 
   // Bookmark YouTube attachment
   const [nextYoutubeUrl, setNextYoutubeUrl] = useState('');
@@ -291,7 +297,7 @@ export default function App() {
   const unansweredCount = questions.filter(q => q.bookmark_number === currentBookmark && !q.answered).length;
   const totalPollResponses = pollResponses.yes + pollResponses.no;
   const canRunPoll = unansweredCount === 0 && currentBookmark > 0;
-  const canAdvance = unansweredCount === 0 && pollComplete && (pollScore ?? 0) >= 80 && nextValue.trim().length > 0;
+  const canAdvance = unansweredCount === 0 && pollComplete && (pollScore ?? 0) >= 80 && (nextValue.trim().length > 0 || nextYoutubeUrl.trim().length > 0);
   const isStemSubject = STEM_SUBJECTS.includes(quizSubject);
   const currentBmQs = questions.filter(q => q.bookmark_number === currentBookmark);
   const pastQs = questions.filter(q => q.bookmark_number !== currentBookmark);
@@ -316,6 +322,11 @@ export default function App() {
   }, []);
 
   useEffect(() => { isHostRef.current = isHost; }, [isHost]);
+  useEffect(() => { ytVideoIdRef.current = ytVideoId; }, [ytVideoId]);
+  useEffect(() => { ytCurrentTimeRef.current = ytCurrentTime; }, [ytCurrentTime]);
+  useEffect(() => { ytPlayingRef.current = ytPlaying; }, [ytPlaying]);
+  useEffect(() => { contentUrlRef.current = contentUrl; }, [contentUrl]);
+  useEffect(() => { sessionStatusRef.current = sessionStatus; }, [sessionStatus]);
   useEffect(() => { if (hostVideoRef.current && hostStream) hostVideoRef.current.srcObject = hostStream; }, [hostStream]);
   useEffect(() => { fetchClasses(); }, []);
 
@@ -405,14 +416,20 @@ export default function App() {
     if (!ytVideoId || isHost) return;
     loadYouTubeApi(() => {
       if (studentYtPlayer.current) {
-        studentYtPlayer.current.loadVideoById({ videoId: ytVideoId, startSeconds: ytCurrentTime });
+        studentYtPlayer.current.loadVideoById({ videoId: ytVideoId, startSeconds: ytCurrentTimeRef.current });
         return;
       }
       studentYtPlayer.current = new (window as any).YT.Player(ytStudentDivId, {
         height: '100%', width: '100%',
         videoId: ytVideoId,
-        playerVars: { start: Math.floor(ytCurrentTime), rel: 0, modestbranding: 1, enablejsapi: 1, controls: 0, disablekb: 1 },
-        events: { onReady: () => setYtPlayerReady(true) },
+        playerVars: { start: Math.floor(ytCurrentTimeRef.current), rel: 0, modestbranding: 1, enablejsapi: 1, controls: 0, disablekb: 1, autoplay: 1 },
+        events: {
+          onReady: (e: any) => {
+            setYtPlayerReady(true);
+            e.target.seekTo(ytCurrentTimeRef.current, true);
+            if (ytPlayingRef.current) e.target.playVideo();
+          },
+        },
       });
     });
   }, [ytVideoId, isHost]);
@@ -480,6 +497,18 @@ export default function App() {
   };
 
   const setupRoom = async () => {
+    // ── Fetch existing room state on join ──────────────────────────────────
+    try {
+      const [qRes, fRes, sRes] = await Promise.all([
+        supabase.from('questions').select('*').eq('lounge_id', currentClass.id).order('created_at', { ascending: false }),
+        supabase.from('file_shares').select('*').eq('lounge_id', currentClass.id).order('created_at', { ascending: false }),
+        supabase.from('class_sessions').select('*').eq('lounge_id', currentClass.id).order('started_at', { ascending: false }).limit(1),
+      ]);
+      if (qRes.data) setQuestions(qRes.data as Question[]);
+      if (fRes.data) setSharedFiles(fRes.data.map((r: any) => ({ file_name: r.file_name, file_url: r.file_url, from_name: r.from_name })));
+      if (sRes.data?.[0]) setSessionStatus(sRes.data[0].status);
+    } catch (e) { console.warn('Initial fetch:', e); }
+
     const dbc = supabase.channel(`lounge-db-${currentClass.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'questions' }, (p) => {
         setQuestions(prev => prev.some(q => q.id === p.new.id) ? prev : [p.new as Question, ...prev]);
@@ -493,7 +522,20 @@ export default function App() {
     dbChannel.current = dbc;
 
     const sc = supabase.channel(`signals-${currentClass.id}`, { config: { broadcast: { self: false } } });
-    sc.on('broadcast', { event: 'peer-join' }, async ({ payload }: any) => { if (!isHostRef.current) return; await createConnectionForStudent(payload.peerId); });
+    sc.on('broadcast', { event: 'peer-join' }, async ({ payload }: any) => {
+      if (!isHostRef.current) return;
+      await createConnectionForStudent(payload.peerId);
+      // Resync late-joining student with current room state
+      setTimeout(() => {
+        const vid = ytVideoIdRef.current;
+        const ct = ytCurrentTimeRef.current;
+        const cu = contentUrlRef.current;
+        const ss = sessionStatusRef.current;
+        if (vid) sendSignal('yt-load', { videoId: vid, startSeconds: ct });
+        if (cu) sendSignal('content-share', { url: cu });
+        if (ss !== 'not_started') sendSignal('session-status', { status: ss });
+      }, 1200);
+    });
     sc.on('broadcast', { event: 'offer' }, async ({ payload }: any) => { if (isHostRef.current || payload.to !== myId) return; await handleIncomingOffer(payload.from, payload.sdp); });
     sc.on('broadcast', { event: 'answer' }, async ({ payload }: any) => {
       if (!isHostRef.current || payload.to !== myId) return;
